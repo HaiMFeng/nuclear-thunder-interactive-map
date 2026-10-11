@@ -20,8 +20,15 @@
         body { margin: 0; background: #0f111a; color: #f7fafc; }
         #map { width: 100vw; height: 100vh; background: #0a0a0a; }
 
+        /*
+         * The info panel and map legend live outside the Leaflet container, so
+         * nothing clips them. They must be viewport-fixed: an absolutely
+         * positioned box translated off-screen by its collapsed state still
+         * counts towards the document's scrollable overflow, which widened
+         * the page and let it scroll sideways. Fixed boxes never extend it.
+         */
         .info-panel {
-            position: absolute;
+            position: fixed;
             top: 10px;
             left: 10px;
             z-index: 1000;
@@ -65,7 +72,7 @@
         }
 
         .composition-window {
-            position: absolute;
+            position: fixed;
             bottom: 12px;
             right: 10px;
             z-index: 1000;
@@ -1364,7 +1371,7 @@
         </div>
     </div>
 
-    <p class="feedback-contact">Updated 2.59.0.56<br>Feedback: Discord @majorlier</p>
+    <p class="feedback-contact">Updated 2.59.0.62<br>Feedback: Discord @majorlier</p>
 </div>
 
 <aside id="composition-window" class="composition-window">
@@ -1441,9 +1448,8 @@
             mapCoord1: [65536, 65536]
         }
     };
-    const mapSelectionStorageKey = "nuclear-thunder-map-selection";
     // sessionStorage can throw in privacy modes or sandboxed frames; the
-    // remembered map/variant is only a convenience.
+    // remembered side swap is only a convenience.
     function readSessionValue(key) {
         try {
             return sessionStorage.getItem(key);
@@ -1458,11 +1464,38 @@
             // Ignore: the selection simply is not remembered.
         }
     }
+    // Map, scenario and drawer choices persist between visits under one
+    // namespaced key. Storage may be blocked or throw, and stored values may
+    // be stale after a data update, so every consumer validates its field and
+    // silently falls back to the default.
+    const uiStateStorageKey = "ntmap.ui.v1";
+    function readUiState() {
+        try {
+            const value = JSON.parse(localStorage.getItem(uiStateStorageKey));
+            return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+        } catch (error) {
+            return {};
+        }
+    }
+    const uiState = readUiState();
+    function saveUiState(changes) {
+        Object.assign(uiState, changes);
+        try {
+            // Merge with the stored copy so other open tabs' fields survive.
+            localStorage.setItem(
+                uiStateStorageKey,
+                JSON.stringify({ ...readUiState(), ...changes })
+            );
+        } catch (error) {
+            // Ignore: the choice simply is not remembered.
+        }
+    }
     // Keep the initial presentation aligned with the game's standard NATO
     // tactical map. This is intentionally not persisted between sessions.
     let iconFamily = "nato";
-    let currentMapId = readSessionValue(mapSelectionStorageKey) || "archipelago";
-    if (!MAP_DEFINITIONS[currentMapId]) currentMapId = "archipelago";
+    let currentMapId = Object.keys(MAP_DEFINITIONS).includes(uiState.map)
+        ? uiState.map
+        : "archipelago";
 
     function activeMapDefinition() {
         return MAP_DEFINITIONS[currentMapId] || MAP_DEFINITIONS.archipelago;
@@ -1526,28 +1559,40 @@
     infoDrawerToggle.setAttribute("aria-label", "Collapse left controls");
     infoDrawerToggle.setAttribute("aria-expanded", "true");
     infoDrawerToggle.textContent = "‹";
-    infoDrawerToggle.addEventListener("click", () => {
-        const collapsed = infoPanel.classList.toggle("is-collapsed");
+    function setInfoPanelCollapsed(collapsed) {
+        infoPanel.classList.toggle("is-collapsed", collapsed);
         infoDrawerToggle.textContent = collapsed ? "›" : "‹";
         infoDrawerToggle.setAttribute("aria-expanded", String(!collapsed));
         infoDrawerToggle.setAttribute(
             "aria-label",
             collapsed ? "Expand left controls" : "Collapse left controls"
         );
+    }
+    infoDrawerToggle.addEventListener("click", () => {
+        const collapsed = !infoPanel.classList.contains("is-collapsed");
+        setInfoPanelCollapsed(collapsed);
+        saveUiState({ controlsCollapsed: collapsed });
     });
     infoPanel.appendChild(infoDrawerToggle);
+    setInfoPanelCollapsed(uiState.controlsCollapsed === true);
 
     const compositionWindow = document.getElementById("composition-window");
     const compositionWindowToggle = document.getElementById("composition-window-toggle");
-    compositionWindowToggle.addEventListener("click", () => {
-        const collapsed = compositionWindow.classList.toggle("is-collapsed");
+    function setCompositionWindowCollapsed(collapsed) {
+        compositionWindow.classList.toggle("is-collapsed", collapsed);
         compositionWindowToggle.textContent = collapsed ? "›" : "‹";
         compositionWindowToggle.setAttribute("aria-expanded", String(!collapsed));
         compositionWindowToggle.setAttribute(
             "aria-label",
             collapsed ? "Expand map legend" : "Collapse map legend"
         );
+    }
+    compositionWindowToggle.addEventListener("click", () => {
+        const collapsed = !compositionWindow.classList.contains("is-collapsed");
+        setCompositionWindowCollapsed(collapsed);
+        saveUiState({ legendCollapsed: collapsed });
     });
+    setCompositionWindowCollapsed(uiState.legendCollapsed === true);
 
     const standardMapLayer = L.imageOverlay(activeMapDefinition().image, bounds).addTo(map);
     const topographicMapLayer = L.imageOverlay(
@@ -2494,7 +2539,7 @@
             input.checked = definition.id === currentMapId;
             input.addEventListener("change", event => {
                 currentMapId = event.target.value;
-                writeSessionValue(mapSelectionStorageKey, currentMapId);
+                saveUiState({ map: currentMapId });
                 // Planning points are stored in image coordinates, which
                 // mean different world positions and scales on each map.
                 clearPlanningTools();
@@ -2602,10 +2647,13 @@
             options.append(option);
         });
         options.disabled = !presets.length;
-        options.value = presets.some(preset => preset.id === previouslySelected)
-            ? previouslySelected
-            : presets[0]?.id || "";
+        // A remembered scenario can disappear after a datamine update; only
+        // restore ids that still exist.
+        const restoredId = [previouslySelected, uiState.scenario]
+            .find(id => presets.some(preset => preset.id === id));
+        options.value = restoredId || presets[0]?.id || "";
         options.onchange = event => {
+            saveUiState({ scenario: event.target.value });
             renderMapData(event.target.value);
         };
     }
@@ -5616,18 +5664,22 @@
             const container = L.DomUtil.create("div", "grouped-layers", drawer);
             const toggle = L.DomUtil.create("button", "layers-drawer-toggle", drawer);
             toggle.type = "button";
-            toggle.textContent = "›";
-            toggle.setAttribute("aria-label", "Collapse layer controls");
-            toggle.setAttribute("aria-expanded", "true");
-            toggle.addEventListener("click", () => {
-                const collapsed = drawer.classList.toggle("is-collapsed");
+            function setDrawerCollapsed(collapsed) {
+                drawer.classList.toggle("is-collapsed", collapsed);
                 toggle.textContent = collapsed ? "‹" : "›";
                 toggle.setAttribute("aria-expanded", String(!collapsed));
                 toggle.setAttribute(
                     "aria-label",
                     collapsed ? "Expand layer controls" : "Collapse layer controls"
                 );
+            }
+            toggle.addEventListener("click", () => {
+                const collapsed = !drawer.classList.contains("is-collapsed");
+                setDrawerCollapsed(collapsed);
+                saveUiState({ layersCollapsed: collapsed });
             });
+            // The control is rebuilt on every map switch; keep its state.
+            setDrawerCollapsed(uiState.layersCollapsed === true);
             L.DomEvent.disableClickPropagation(drawer);
             L.DomEvent.disableScrollPropagation(drawer);
 

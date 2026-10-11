@@ -32,7 +32,9 @@
             top: 10px;
             left: 10px;
             z-index: 1000;
-            width: min(330px, calc(100vw - 70px));
+            /* On phones, leave room for this panel's tab and the collapsed
+               layer drawer's tab at the top right. */
+            width: min(330px, calc(100vw - 84px));
             padding: 14px 16px;
             border: 1px solid #3b4252;
             border-radius: 8px;
@@ -44,8 +46,10 @@
             transition: transform 180ms ease;
         }
 
+        /* Collapsed drawers slide fully past their 10px edge offset so only
+           the toggle tab stays on screen (same for the legend and layers). */
         .info-panel.is-collapsed {
-            transform: translateX(calc(-100% - 8px));
+            transform: translateX(calc(-100% - 12px));
         }
 
         .feedback-contact {
@@ -87,7 +91,7 @@
         }
 
         .composition-window.is-collapsed {
-            transform: translateX(calc(100% + 8px));
+            transform: translateX(calc(100% + 12px));
         }
 
         .composition-window .drawer-toggle {
@@ -964,14 +968,15 @@
             transition: transform 180ms ease;
         }
 
+        /* 10px is Leaflet's right control margin. */
         .layers-drawer.is-collapsed {
-            transform: translateX(calc(100% - 29px));
+            transform: translateX(calc(100% + 12px));
         }
 
         .layers-drawer-toggle {
             position: absolute;
             top: 10px;
-            left: -29px;
+            left: -34px;
             width: 30px;
             height: 34px;
             padding: 0;
@@ -1376,7 +1381,7 @@
 
 <aside id="composition-window" class="composition-window">
     <button id="composition-window-toggle" class="drawer-toggle" type="button"
-        aria-label="Collapse map legend" aria-expanded="true">‹</button>
+        aria-label="Collapse map legend" aria-expanded="true">›</button>
     <section class="composition-drawer">
         <h2 class="legend-heading">Map legend</h2>
         <section id="composition-panel" class="composition-panel" aria-live="polite">
@@ -1462,6 +1467,13 @@
         }
     }
     const uiState = readUiState();
+    // Phones cannot fit the controls, layer drawer and legend side by side.
+    // Without a saved choice, the layer drawer and legend start collapsed
+    // there; a saved choice always wins.
+    const narrowViewport = window.matchMedia?.("(max-width: 700px)").matches === true;
+    function drawerStartsCollapsed(saved) {
+        return typeof saved === "boolean" ? saved : narrowViewport;
+    }
     function saveUiState(changes) {
         Object.assign(uiState, changes);
         try {
@@ -1566,7 +1578,7 @@
     const compositionWindowToggle = document.getElementById("composition-window-toggle");
     function setCompositionWindowCollapsed(collapsed) {
         compositionWindow.classList.toggle("is-collapsed", collapsed);
-        compositionWindowToggle.textContent = collapsed ? "›" : "‹";
+        compositionWindowToggle.textContent = collapsed ? "‹" : "›";
         compositionWindowToggle.setAttribute("aria-expanded", String(!collapsed));
         compositionWindowToggle.setAttribute(
             "aria-label",
@@ -1578,7 +1590,7 @@
         setCompositionWindowCollapsed(collapsed);
         saveUiState({ legendCollapsed: collapsed });
     });
-    setCompositionWindowCollapsed(uiState.legendCollapsed === true);
+    setCompositionWindowCollapsed(drawerStartsCollapsed(uiState.legendCollapsed));
 
     const standardMapLayer = L.imageOverlay(activeMapDefinition().image, bounds).addTo(map);
     const topographicMapLayer = L.imageOverlay(
@@ -5791,7 +5803,7 @@
                 saveUiState({ layersCollapsed: collapsed });
             });
             // The control is rebuilt on every map switch; keep its state.
-            setDrawerCollapsed(uiState.layersCollapsed === true);
+            setDrawerCollapsed(drawerStartsCollapsed(uiState.layersCollapsed));
             L.DomEvent.disableClickPropagation(drawer);
             L.DomEvent.disableScrollPropagation(drawer);
 

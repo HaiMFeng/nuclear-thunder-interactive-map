@@ -2409,6 +2409,10 @@
     const DETAIL_ZOOM = 1.5;
     let focusedOverviewSite = null;
     let focusedOverviewMarker = null;
+    // A runway click highlights that airfield without selecting it. Keep it
+    // separate from focusedOverviewSite, which must always belong to
+    // focusedOverviewMarker so the marker returns to its own layer group.
+    let highlightedRunwaySite = null;
     const focusedOverviewSelections = new Map();
     // Grouped sites use a deliberate two-step interaction: first select the
     // site in place, then click the same marker again to expand and zoom.
@@ -4717,6 +4721,7 @@
         }
         focusedOverviewMarker = null;
         focusedOverviewSite = null;
+        highlightedRunwaySite = null;
         focusedOverviewExpanded = false;
         focusedOverviewSelections.clear();
         if (!keepDetails) focusedDetailGroup.clearLayers();
@@ -4726,12 +4731,12 @@
     }
 
     function highlightAirfieldRunway(siteName) {
-        latestOverviewEntries
-            .filter(entry => entry.site.name === siteName && operationalCategory(entry.site) === "airfields")
-            .forEach(entry => {
-                focusedOverviewSite = entry;
-                refreshAirfieldRunwayStyles();
-            });
+        const entry = latestOverviewEntries.find(candidate =>
+            candidate.site.name === siteName && operationalCategory(candidate.site) === "airfields"
+        );
+        if (!entry) return;
+        highlightedRunwaySite = siteName;
+        refreshAirfieldRunwayStyles();
     }
 
     function refreshAirfieldRunwayStyles() {
@@ -4739,7 +4744,8 @@
         latestOverviewEntries
             .filter(entry => operationalCategory(entry.site) === "airfields")
             .forEach(entry => {
-                const focused = focusedOverviewSite?.site.name === entry.site.name;
+                const focused = focusedOverviewSite?.site.name === entry.site.name ||
+                    highlightedRunwaySite === entry.site.name;
                 const siteLayer = siteGroups[entry.site.team]?.airfields;
                 const layerVisible = !siteLayer || layerIsEnabled(siteLayer);
                 const highlighted = layerVisible && (focused || (

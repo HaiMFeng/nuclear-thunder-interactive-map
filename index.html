@@ -1212,6 +1212,12 @@
             background: #90cdf4;
         }
 
+        /* Flight brush strokes are drawn with pointer events; stop the
+           browser from claiming touch drags for panning or scrolling. */
+        .leaflet-container.flight-brush-active {
+            touch-action: none;
+        }
+
         .map-tools-status {
             min-height: 16px;
             margin-top: 5px;
@@ -2235,6 +2241,15 @@
             map.doubleClickZoom.enable();
         }
         map.getContainer().style.cursor = ["flight", "los"].includes(activeMapTool) ? "crosshair" : "";
+        // A drag draws while the flight brush is active (mouse, pen or
+        // touch), so the map must not pan at the same time.
+        finishFlightStroke();
+        if (activeMapTool === "flight") {
+            map.dragging.disable();
+        } else {
+            map.dragging.enable();
+        }
+        map.getContainer().classList.toggle("flight-brush-active", activeMapTool === "flight");
         updateMapToolsUi();
     }
 
@@ -2272,7 +2287,6 @@
             flightStrokes.push(flightCurrentStroke);
         }
         flightCurrentStroke = null;
-        map.dragging.enable();
         renderFlightBrush();
         updateMapToolsUi();
     }
@@ -2381,28 +2395,45 @@
         setActiveMapTool("ruler");
     });
 
-    map.on("mousedown", event => {
-        if (activeMapTool !== "flight" || event.originalEvent?.button !== 0) return;
+    // Pointer events cover mouse, pen and touch; Leaflet's mouse events
+    // never fire for a touch drag. Map dragging is disabled while the tool
+    // is active (setActiveMapTool), so the drag only draws.
+    const flightBrushSurface = map.getContainer();
+    flightBrushSurface.addEventListener("pointerdown", event => {
+        if (activeMapTool !== "flight") return;
+        if (event.target.closest(".leaflet-control-container, .leaflet-popup")) return;
+        if (!event.isPrimary) {
+            // A second finger means a pinch: drop the partial stroke.
+            flightCurrentStroke = null;
+            renderFlightBrush();
+            return;
+        }
+        if (event.button !== 0) return;
         flightCurrentStroke = {
-            points: [event.latlng],
+            points: [map.mouseEventToLatLng(event)],
             color: flightBrushColor,
             size: flightBrushSize
         };
-        map.dragging.disable();
-        event.originalEvent?.preventDefault();
+        // Keep receiving moves when the pointer leaves the map.
+        flightBrushSurface.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
     });
 
-    map.on("mousemove", event => {
-        if (!flightCurrentStroke) return;
+    flightBrushSurface.addEventListener("pointermove", event => {
+        if (!flightCurrentStroke || !event.isPrimary) return;
+        const latlng = map.mouseEventToLatLng(event);
         const points = flightCurrentStroke.points;
         const previous = points[points.length - 1];
-        if (Math.hypot(previous.lat - event.latlng.lat, previous.lng - event.latlng.lng) < 0.5) return;
-        points.push(event.latlng);
+        if (Math.hypot(previous.lat - latlng.lat, previous.lng - latlng.lng) < 0.5) return;
+        points.push(latlng);
         renderFlightBrush();
     });
 
-    map.on("mouseup", finishFlightStroke);
-    map.getContainer().addEventListener("mouseleave", finishFlightStroke);
+    ["pointerup", "pointercancel"].forEach(type =>
+        flightBrushSurface.addEventListener(type, event => {
+            if (event.isPrimary) finishFlightStroke();
+        })
+    );
 
     function makeVisibleLayerGroup() {
         return L.layerGroup().addTo(map);

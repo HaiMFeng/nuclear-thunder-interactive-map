@@ -2631,15 +2631,23 @@
         const previouslySelected = options.value;
         options.replaceChildren();
         const presets = globalPresetData.presets || [];
+        const suffixFor = preset => {
+            const br = presetBrLabel(preset);
+            return br ? `[${br}]` : "";
+        };
+        // Native select options cannot contain flex markup. Right-align the
+        // BR suffixes in the (monospace) list by padding to the longest
+        // entry only, so the closed select stays narrow enough to show the
+        // full BR on phones as well.
+        const width = Math.max(0, ...presets.map(preset =>
+            preset.label.length + suffixFor(preset).length + 1
+        ));
         presets.forEach(preset => {
             const option = document.createElement("option");
             option.value = preset.id;
-            const br = presetBrLabel(preset);
-            const suffix = br ? `[${br}]` : "";
-            // Native select options cannot contain flex markup. Keep any
-            // official BR suffix right-spaced without inventing a bracket.
+            const suffix = suffixFor(preset);
             const gap = suffix
-                ? "\u00a0".repeat(Math.max(3, 35 - preset.label.length - suffix.length))
+                ? "\u00a0".repeat(Math.max(1, width - preset.label.length - suffix.length))
                 : "";
             option.textContent = `${preset.label}${gap}${suffix}`;
             options.append(option);

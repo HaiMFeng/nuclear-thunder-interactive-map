@@ -1353,7 +1353,7 @@
         </div>
     </div>
 
-    <button id="team-swap" class="team-swap" type="button" aria-pressed="false">
+    <button id="team-swap" class="team-swap" type="button" aria-pressed="false" disabled>
         SWAP SIDES
     </button>
 
@@ -5307,7 +5307,10 @@
 
     document.getElementById("team-swap").addEventListener("click", () => {
         const definition = activeMapDefinition();
-        if (!definition.supportsTeamSwap) return;
+        // The button starts disabled and is enabled by updateTeamSwapUi once
+        // the map variants are loaded; guard as well in case it is clicked
+        // programmatically before then.
+        if (!definition.supportsTeamSwap || !globalSiteData.length) return;
         activateMapVariant(
             currentMapVariant === definition.mirroredVariant
                 ? definition.defaultVariant

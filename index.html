@@ -20,12 +20,21 @@
         body { margin: 0; background: #0f111a; color: #f7fafc; }
         #map { width: 100vw; height: 100vh; background: #0a0a0a; }
 
+        /*
+         * The info panel and map legend live outside the Leaflet container, so
+         * nothing clips them. They must be viewport-fixed: an absolutely
+         * positioned box translated off-screen by its collapsed state still
+         * counts towards the document's scrollable overflow, which widened
+         * the page and let it scroll sideways. Fixed boxes never extend it.
+         */
         .info-panel {
-            position: absolute;
+            position: fixed;
             top: 10px;
             left: 10px;
             z-index: 1000;
-            width: min(330px, calc(100vw - 70px));
+            /* On phones, leave room for this panel's tab and the collapsed
+               layer drawer's tab at the top right. */
+            width: min(330px, calc(100vw - 84px));
             padding: 14px 16px;
             border: 1px solid #3b4252;
             border-radius: 8px;
@@ -37,8 +46,10 @@
             transition: transform 180ms ease;
         }
 
+        /* Collapsed drawers slide fully past their 10px edge offset so only
+           the toggle tab stays on screen (same for the legend and layers). */
         .info-panel.is-collapsed {
-            transform: translateX(calc(-100% - 8px));
+            transform: translateX(calc(-100% - 12px));
         }
 
         .feedback-contact {
@@ -65,7 +76,7 @@
         }
 
         .composition-window {
-            position: absolute;
+            position: fixed;
             bottom: 12px;
             right: 10px;
             z-index: 1000;
@@ -80,7 +91,7 @@
         }
 
         .composition-window.is-collapsed {
-            transform: translateX(calc(100% + 8px));
+            transform: translateX(calc(100% + 12px));
         }
 
         .composition-window .drawer-toggle {
@@ -957,14 +968,15 @@
             transition: transform 180ms ease;
         }
 
+        /* 10px is Leaflet's right control margin. */
         .layers-drawer.is-collapsed {
-            transform: translateX(calc(100% - 29px));
+            transform: translateX(calc(100% + 12px));
         }
 
         .layers-drawer-toggle {
             position: absolute;
             top: 10px;
-            left: -29px;
+            left: -34px;
             width: 30px;
             height: 34px;
             padding: 0;
@@ -1200,6 +1212,12 @@
             background: #90cdf4;
         }
 
+        /* Flight brush strokes are drawn with pointer events; stop the
+           browser from claiming touch drags for panning or scrolling. */
+        .leaflet-container.flight-brush-active {
+            touch-action: none;
+        }
+
         .map-tools-status {
             min-height: 16px;
             margin-top: 5px;
@@ -1229,6 +1247,55 @@
         }
 
         .los-options[hidden] { display: none; }
+
+        .threat-options {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            align-items: center;
+            gap: 5px 8px;
+            margin-top: 7px;
+            padding-top: 7px;
+            border-top: 1px solid #3b4252;
+        }
+
+        .threat-options[hidden] { display: none; }
+
+        .threat-options label { display: contents; }
+
+        .threat-options input,
+        .threat-options select {
+            box-sizing: border-box;
+            padding: 3px 5px;
+            border: 1px solid #4a5568;
+            border-radius: 3px;
+            color: #edf2f7;
+            background: #202734;
+            font: inherit;
+        }
+
+        .threat-options input { width: 80px; }
+
+        .threat-legend {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            color: #a0aec0;
+        }
+
+        .threat-legend i {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            margin-right: 4px;
+            border-radius: 2px;
+            vertical-align: -1px;
+        }
+
+        .threat-status {
+            grid-column: 1 / -1;
+            color: #e2e8f0;
+        }
 
         .los-options label { display: contents; }
 
@@ -1346,7 +1413,7 @@
         </div>
     </div>
 
-    <button id="team-swap" class="team-swap" type="button" aria-pressed="false">
+    <button id="team-swap" class="team-swap" type="button" aria-pressed="false" disabled>
         SWAP SIDES
     </button>
 
@@ -1364,12 +1431,12 @@
         </div>
     </div>
 
-    <p class="feedback-contact">Updated 2.59.0.56<br>Feedback: Discord @majorlier</p>
+    <p class="feedback-contact">Updated 2.59.0.62<br>Feedback: Discord @majorlier</p>
 </div>
 
 <aside id="composition-window" class="composition-window">
     <button id="composition-window-toggle" class="drawer-toggle" type="button"
-        aria-label="Collapse map legend" aria-expanded="true">‹</button>
+        aria-label="Collapse map legend" aria-expanded="true">›</button>
     <section class="composition-drawer">
         <h2 class="legend-heading">Map legend</h2>
         <section id="composition-panel" class="composition-panel" aria-live="polite">
@@ -1388,6 +1455,11 @@
     const CITY_TERRAIN_HEIGHT_IMAGE = "generated/southeastern_city_heightmap/southeastern_city_height_16bit.webp";
     const IMG_SIZE = 4096;
     const LOS_GRID_SIZE = 256;
+    // Threat coverage sweeps every emitter across the whole map. Work grows
+    // with the square of range in cells, so cells are a fixed 512 m on every
+    // map (512 cells on Archipelago, 256 on the smaller City) to stay
+    // interactive.
+    const THREAT_CELL_METERS = 512;
     const CITY_MAP_IMAGE = "air_south_eastern_city_map.png";
     const MAP_DEFINITIONS = {
         archipelago: {
@@ -1441,28 +1513,47 @@
             mapCoord1: [65536, 65536]
         }
     };
-    const mapSelectionStorageKey = "nuclear-thunder-map-selection";
-    // sessionStorage can throw in privacy modes or sandboxed frames; the
-    // remembered map/variant is only a convenience.
-    function readSessionValue(key) {
+    // Map, scenario, side, icon and drawer choices persist between visits under one
+    // namespaced key. Storage may be blocked or throw, and stored values may
+    // be stale after a data update, so every consumer validates its field and
+    // silently falls back to the default.
+    const uiStateStorageKey = "ntmap.ui.v1";
+    function readUiState() {
         try {
-            return sessionStorage.getItem(key);
+            const value = JSON.parse(localStorage.getItem(uiStateStorageKey));
+            return value && typeof value === "object" && !Array.isArray(value) ? value : {};
         } catch (error) {
-            return null;
+            return {};
         }
     }
-    function writeSessionValue(key, value) {
+    const uiState = readUiState();
+    // Phones cannot fit the controls, layer drawer and legend side by side.
+    // Without a saved choice, the layer drawer and legend start collapsed
+    // there; a saved choice always wins.
+    const narrowViewport = window.matchMedia?.("(max-width: 700px)").matches === true;
+    function drawerStartsCollapsed(saved) {
+        return typeof saved === "boolean" ? saved : narrowViewport;
+    }
+    function saveUiState(changes) {
+        Object.assign(uiState, changes);
         try {
-            sessionStorage.setItem(key, value);
+            // Merge with the stored copy so other open tabs' fields survive.
+            localStorage.setItem(
+                uiStateStorageKey,
+                JSON.stringify({ ...readUiState(), ...changes })
+            );
         } catch (error) {
-            // Ignore: the selection simply is not remembered.
+            // Ignore: the choice simply is not remembered.
         }
     }
-    // Keep the initial presentation aligned with the game's standard NATO
-    // tactical map. This is intentionally not persisted between sessions.
-    let iconFamily = "nato";
-    let currentMapId = readSessionValue(mapSelectionStorageKey) || "archipelago";
-    if (!MAP_DEFINITIONS[currentMapId]) currentMapId = "archipelago";
+    // NATO symbols match the game's standard tactical map and stay the
+    // default until another family is chosen.
+    let iconFamily = ["vanilla", "pact"].includes(uiState.iconFamily)
+        ? uiState.iconFamily
+        : "nato";
+    let currentMapId = Object.keys(MAP_DEFINITIONS).includes(uiState.map)
+        ? uiState.map
+        : "archipelago";
 
     function activeMapDefinition() {
         return MAP_DEFINITIONS[currentMapId] || MAP_DEFINITIONS.archipelago;
@@ -1526,28 +1617,40 @@
     infoDrawerToggle.setAttribute("aria-label", "Collapse left controls");
     infoDrawerToggle.setAttribute("aria-expanded", "true");
     infoDrawerToggle.textContent = "‹";
-    infoDrawerToggle.addEventListener("click", () => {
-        const collapsed = infoPanel.classList.toggle("is-collapsed");
+    function setInfoPanelCollapsed(collapsed) {
+        infoPanel.classList.toggle("is-collapsed", collapsed);
         infoDrawerToggle.textContent = collapsed ? "›" : "‹";
         infoDrawerToggle.setAttribute("aria-expanded", String(!collapsed));
         infoDrawerToggle.setAttribute(
             "aria-label",
             collapsed ? "Expand left controls" : "Collapse left controls"
         );
+    }
+    infoDrawerToggle.addEventListener("click", () => {
+        const collapsed = !infoPanel.classList.contains("is-collapsed");
+        setInfoPanelCollapsed(collapsed);
+        saveUiState({ controlsCollapsed: collapsed });
     });
     infoPanel.appendChild(infoDrawerToggle);
+    setInfoPanelCollapsed(uiState.controlsCollapsed === true);
 
     const compositionWindow = document.getElementById("composition-window");
     const compositionWindowToggle = document.getElementById("composition-window-toggle");
-    compositionWindowToggle.addEventListener("click", () => {
-        const collapsed = compositionWindow.classList.toggle("is-collapsed");
-        compositionWindowToggle.textContent = collapsed ? "›" : "‹";
+    function setCompositionWindowCollapsed(collapsed) {
+        compositionWindow.classList.toggle("is-collapsed", collapsed);
+        compositionWindowToggle.textContent = collapsed ? "‹" : "›";
         compositionWindowToggle.setAttribute("aria-expanded", String(!collapsed));
         compositionWindowToggle.setAttribute(
             "aria-label",
             collapsed ? "Expand map legend" : "Collapse map legend"
         );
+    }
+    compositionWindowToggle.addEventListener("click", () => {
+        const collapsed = !compositionWindow.classList.contains("is-collapsed");
+        setCompositionWindowCollapsed(collapsed);
+        saveUiState({ legendCollapsed: collapsed });
     });
+    setCompositionWindowCollapsed(drawerStartsCollapsed(uiState.legendCollapsed));
 
     const standardMapLayer = L.imageOverlay(activeMapDefinition().image, bounds).addTo(map);
     const topographicMapLayer = L.imageOverlay(
@@ -1562,6 +1665,20 @@
     // Rows run north to south like the source image.
     let terrainGrid = null;
     let terrainLoadToken = 0;
+    // Identifies the raster/decoding that terrainGrid holds or is loading,
+    // so repeated requests for the same definition do not fetch and decode
+    // the large height image again.
+    let terrainLoadKey = null;
+
+    // Only the fields that affect decoding. Metadata files also carry the
+    // image name and dimensions, which must not trigger a reload.
+    function terrainEncodingSignature(encoding) {
+        return JSON.stringify(["format", "min_m", "step_m", "range_m"].map(field =>
+            field === "format"
+                ? String(encoding?.format || "rg16")
+                : (Number.isFinite(Number(encoding?.[field])) ? Number(encoding[field]) : null)
+        ));
+    }
 
     function decodeTerrainPixels(rgba, width, height, encoding) {
         const heights = new Float32Array(width * height);
@@ -1605,6 +1722,12 @@
     }
 
     function loadTerrainForMap(definition) {
+        const loadKey = definition.terrainImage
+            ? `${definition.terrainImage}|${terrainEncodingSignature(definition.terrainEncoding)}`
+            : null;
+        // Already loaded or in flight for this exact raster and decoding.
+        if (loadKey && loadKey === terrainLoadKey) return;
+        terrainLoadKey = loadKey;
         terrainReadoutReady = false;
         terrainGrid = null;
         const token = ++terrainLoadToken;
@@ -1629,9 +1752,12 @@
                     renderLineOfSight();
                     updateMapToolsUi();
                 }
+                if (threatCoverEnabled) renderThreatCover();
             })
             .catch(error => {
                 if (token !== terrainLoadToken) return;
+                // Allow a later map switch to retry the failed raster.
+                terrainLoadKey = null;
                 console.error("Could not load terrain heights:", error);
                 if (terrainReadoutElement) {
                     terrainReadoutElement.textContent = "Terrain data could not be loaded for this map";
@@ -1728,11 +1854,11 @@
             .then(response => response.ok ? response.json() : null)
             .then(meta => {
                 if (!meta) return;
-                const previousEncoding = JSON.stringify(definition.terrainEncoding);
+                const previousEncoding = terrainEncodingSignature(definition.terrainEncoding);
                 applyTerrainMeta(definition, meta);
                 if (definition !== activeMapDefinition()) return;
                 updateTerrainLegendScale(definition);
-                if (JSON.stringify(definition.terrainEncoding) !== previousEncoding) {
+                if (terrainEncodingSignature(definition.terrainEncoding) !== previousEncoding) {
                     loadTerrainForMap(definition);
                 }
             })
@@ -1903,7 +2029,8 @@
     const planningLayers = {
         ruler: L.layerGroup().addTo(map),
         flight: L.layerGroup().addTo(map),
-        los: L.layerGroup().addTo(map)
+        los: L.layerGroup().addTo(map),
+        threat: L.layerGroup().addTo(map)
     };
     const planningPoints = { ruler: [], los: [] };
     const flightStrokes = [];
@@ -1919,6 +2046,15 @@
     let losToolButton;
     let flightBrushOptions;
     let losOptions;
+    let threatToolButton;
+    let threatOptions;
+    let threatStatus;
+    let threatCoverEnabled = false;
+    let threatTeam = uiState.threatTeam === 2 ? 2 : 1;
+    let threatAltitude = Number.isFinite(uiState.threatAltitude) && uiState.threatAltitude >= 0
+        ? Math.min(20000, uiState.threatAltitude)
+        : 100;
+    let threatAltitudeMode = uiState.threatAltitudeMode === "asl" ? "asl" : "agl";
 
     function mapLatLngToWorld(latlng) {
         const definition = activeMapDefinition();
@@ -2053,9 +2189,14 @@
                 if (x < 0 || x >= IMG_SIZE || y < 0 || y >= IMG_SIZE) continue;
                 const terrain = sampleTerrainElevation(L.latLng(y, x));
                 if (terrain === null) continue;
+                const distanceMeters = distancePixels * metersPerPixel;
+                // The horizon is formed by the ground; the target stands
+                // above it. Mixing the two would let a raised target hide
+                // everything behind it, shrinking the area as height grows.
+                const terrainAngle = Math.atan2(terrain - observerHeight, distanceMeters);
                 const targetAngle = Math.atan2(
                     terrain + losTargetHeight - observerHeight,
-                    distancePixels * metersPerPixel
+                    distanceMeters
                 );
                 const gridX = Math.min(LOS_GRID_SIZE - 1, Math.floor(x / pixelsPerCell));
                 const gridY = Math.min(LOS_GRID_SIZE - 1, Math.floor(y / pixelsPerCell));
@@ -2065,13 +2206,14 @@
                 // to the clicked observer position.
                 const imageRow = LOS_GRID_SIZE - 1 - gridY;
                 const cellIndex = imageRow * LOS_GRID_SIZE + gridX;
-                const visible = targetAngle >= horizonAngle - 0.0001;
-                if (visible) {
-                    horizonAngle = Math.max(horizonAngle, targetAngle);
+                // Rays overlap near the observer; any ray that sees the
+                // cell makes it visible, so the result is not order-dependent.
+                if (targetAngle >= horizonAngle - 0.0001) {
                     state[cellIndex] = 1;
-                } else {
+                } else if (state[cellIndex] !== 1) {
                     state[cellIndex] = 2;
                 }
+                horizonAngle = Math.max(horizonAngle, terrainAngle);
             }
         }
 
@@ -2104,6 +2246,221 @@
             blockedCells,
             coverage: visibleCells + blockedCells
         };
+    }
+
+    // Radar and air-defence coverage for an aircraft at a chosen altitude.
+    // Each emitter of the selected team is swept like the LOS tool: the
+    // ground along a ray forms the horizon, and a cell is covered when an
+    // aircraft above it is within range and above that horizon. Ranges are
+    // the same extracted values as the range rings; altitude limits, radar
+    // clutter and Earth curvature are not modelled.
+    const THREAT_ANTENNA_HEIGHT = { ground: 10, ship: 20 };
+    const THREAT_AA_ROLES = new Set(["spaa", "launcher"]);
+
+    function threatGridSize(definition) {
+        const width = definition.mapCoord1[0] - definition.mapCoord0[0];
+        return Math.min(512, Math.max(128, Math.round(width / THREAT_CELL_METERS)));
+    }
+
+    function threatEmitters(team, era) {
+        const merged = new Map();
+        const cellPixels = IMG_SIZE / threatGridSize(activeMapDefinition());
+        globalSiteData.forEach(site => {
+            if (site.team !== team) return;
+            const ship = site.source_group === "ships";
+            (site.units_by_era?.[era] || []).forEach(unit => {
+                const specs = globalUnitSpecs[String(unit.name || "").toLowerCase()];
+                // Mission templates switch some air-defence radars off.
+                const radarOff = /radar_off/.test(String(unit.template || ""));
+                const threatSearch = Number(unit.threat_range);
+                const detection = radarOff ? 0 : Number(
+                    threatSearch > 0
+                        ? threatSearch
+                        : specs?.sensors?.detection?.nominal ||
+                            Math.max(...(specs?.sensors?.detection?.scope_ranges || []), 0)
+                ) || 0;
+                const tracking = radarOff ? 0 : Number(specs?.sensors?.tracking?.nominal || 0);
+                const role = String(unit.role || "").toLowerCase();
+                const engagement = ship || THREAT_AA_ROLES.has(role)
+                    ? displayEngagementRange(unit, specs) || 0
+                    : 0;
+                const radar = Math.max(detection, tracking);
+                if (!(radar > 0) && !(engagement > 0)) return;
+                const position = unit.world_pos || site.world_pos;
+                if (!position) return;
+                const [lat, lng] = worldToLatLng(position[0], position[2]);
+                const x = lng / cellPixels;
+                const y = lat / cellPixels;
+                // Launchers and radars of one battery share cells; sweep
+                // each cell once with the battery's longest ranges.
+                const key = `${Math.floor(x)},${Math.floor(y)},${ship ? "s" : "g"}`;
+                const entry = merged.get(key) || {
+                    x, y, ship, radar: 0, engagement: 0
+                };
+                entry.radar = Math.max(entry.radar, radar);
+                entry.engagement = Math.max(entry.engagement, engagement);
+                merged.set(key, entry);
+            });
+        });
+        return [...merged.values()];
+    }
+
+    function renderThreatCover() {
+        const layer = planningLayers.threat;
+        layer.clearLayers();
+        renderThreatCover.lastResult = null;
+        if (!threatCoverEnabled) {
+            updateThreatStatus();
+            return;
+        }
+        const definition = activeMapDefinition();
+        if (!definition.supportsTerrain || !terrainReadoutReady || !globalSiteData.length) {
+            updateThreatStatus();
+            return;
+        }
+        const size = threatGridSize(definition);
+        const cellPixels = IMG_SIZE / size;
+        const cellMeters = (
+            definition.mapCoord1[0] - definition.mapCoord0[0]
+        ) / size;
+        const waterLevel = Number(definition.waterLevel) || 0;
+        // Ground (or water surface) at each cell centre; grid rows run south
+        // to north like map latitude.
+        const ground = new Float32Array(size * size);
+        for (let row = 0; row < size; row += 1) {
+            for (let column = 0; column < size; column += 1) {
+                const height = terrainHeightAtMapPoint(
+                    (column + 0.5) * cellPixels,
+                    (row + 0.5) * cellPixels
+                );
+                ground[row * size + column] = Math.max(height ?? waterLevel, waterLevel);
+            }
+        }
+        const aboveGround = threatAltitudeMode === "agl";
+        const targetHeightAt = index => aboveGround
+            ? ground[index] + threatAltitude
+            : threatAltitude;
+        // 0 none, 1 radar coverage, 2 weapon coverage, 3 below the ground.
+        const cover = new Uint8Array(size * size);
+        if (!aboveGround) {
+            for (let index = 0; index < cover.length; index += 1) {
+                if (threatAltitude < ground[index]) cover[index] = 3;
+            }
+        }
+        const emitters = threatEmitters(threatTeam, selectedPresetId());
+        emitters.forEach(emitter => {
+            const range = Math.max(emitter.radar, emitter.engagement);
+            const originColumn = Math.min(size - 1, Math.max(0, Math.floor(emitter.x)));
+            const originRow = Math.min(size - 1, Math.max(0, Math.floor(emitter.y)));
+            const antenna = ground[originRow * size + originColumn] +
+                THREAT_ANTENNA_HEIGHT[emitter.ship ? "ship" : "ground"];
+            const mark = (index, distance) => {
+                if (cover[index] >= 2) return;
+                const rise = targetHeightAt(index) - antenna;
+                const slant = distance * distance + rise * rise;
+                if (emitter.engagement > 0 && slant <= emitter.engagement ** 2) {
+                    cover[index] = 2;
+                } else if (emitter.radar > 0 && slant <= emitter.radar ** 2 && cover[index] !== 3) {
+                    cover[index] = 1;
+                }
+            };
+            mark(originRow * size + originColumn, 0);
+            // Long-range radars reach far past the map edge; only the part
+            // up to the farthest grid corner needs rays.
+            const reachCells = Math.min(
+                range / cellMeters,
+                Math.max(
+                    Math.hypot(emitter.x, emitter.y),
+                    Math.hypot(size - emitter.x, emitter.y),
+                    Math.hypot(emitter.x, size - emitter.y),
+                    Math.hypot(size - emitter.x, size - emitter.y)
+                )
+            );
+            // Enough rays that neighbouring rays are under a cell apart at
+            // the edge of the reach.
+            const rayCount = Math.max(64, Math.ceil(Math.PI * 2 * reachCells * 1.5));
+            const steps = Math.ceil(reachCells);
+            for (let ray = 0; ray < rayCount; ray += 1) {
+                const angle = ray / rayCount * Math.PI * 2;
+                const directionX = Math.cos(angle);
+                const directionY = Math.sin(angle);
+                let horizon = -Infinity;
+                for (let step = 1; step <= steps; step += 1) {
+                    const column = Math.floor(emitter.x + directionX * step);
+                    const row = Math.floor(emitter.y + directionY * step);
+                    if (column < 0 || column >= size || row < 0 || row >= size) break;
+                    const index = row * size + column;
+                    const distance = step * cellMeters;
+                    const surface = ground[index];
+                    const target = targetHeightAt(index);
+                    if (target >= surface &&
+                        (target - antenna) / distance >= horizon - 1e-6) {
+                        mark(index, distance);
+                    }
+                    horizon = Math.max(horizon, (surface - antenna) / distance);
+                }
+            }
+        });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext("2d");
+        const image = context.createImageData(size, size);
+        const colours = {
+            1: [246, 224, 94, 88],
+            2: [245, 101, 101, 120],
+            3: [26, 32, 44, 150]
+        };
+        let radarCells = 0;
+        let weaponCells = 0;
+        for (let row = 0; row < size; row += 1) {
+            for (let column = 0; column < size; column += 1) {
+                const value = cover[row * size + column];
+                if (!value) continue;
+                if (value === 1) radarCells += 1;
+                if (value === 2) weaponCells += 1;
+                // Image rows run north to south; grid rows south to north.
+                const offset = ((size - 1 - row) * size + column) * 4;
+                image.data.set(colours[value], offset);
+            }
+        }
+        context.putImageData(image, 0, 0);
+        L.imageOverlay(canvas.toDataURL("image/png"), bounds, {
+            opacity: 1,
+            interactive: false,
+            className: "threat-cover-overlay"
+        }).addTo(layer);
+        renderThreatCover.lastResult = {
+            emitters: emitters.length,
+            radarPercent: Math.round((radarCells + weaponCells) / cover.length * 100),
+            weaponPercent: Math.round(weaponCells / cover.length * 100)
+        };
+        updateThreatStatus();
+    }
+
+    function updateThreatStatus() {
+        threatToolButton?.setAttribute("aria-pressed", String(threatCoverEnabled));
+        if (threatOptions) threatOptions.hidden = !threatCoverEnabled;
+        if (!threatStatus) return;
+        const result = renderThreatCover.lastResult;
+        if (!activeMapDefinition().supportsTerrain) {
+            threatStatus.textContent = "Terrain elevation is unavailable for this map.";
+        } else if (!terrainReadoutReady || !globalSiteData.length) {
+            threatStatus.textContent = "Loading terrain and site data…";
+        } else if (result) {
+            threatStatus.textContent = result.emitters
+                ? `${result.emitters} emitter positions · ${result.radarPercent}% of map in coverage · ${result.weaponPercent}% in weapon range.`
+                : "No radar or air defence for this team in this scenario.";
+        } else {
+            threatStatus.textContent = "";
+        }
+    }
+
+    let threatRenderTimer = null;
+    function scheduleThreatCover() {
+        clearTimeout(threatRenderTimer);
+        threatRenderTimer = setTimeout(renderThreatCover, 150);
     }
 
     function updateMapToolsUi() {
@@ -2164,6 +2521,15 @@
             map.doubleClickZoom.enable();
         }
         map.getContainer().style.cursor = ["flight", "los"].includes(activeMapTool) ? "crosshair" : "";
+        // A drag draws while the flight brush is active (mouse, pen or
+        // touch), so the map must not pan at the same time.
+        finishFlightStroke();
+        if (activeMapTool === "flight") {
+            map.dragging.disable();
+        } else {
+            map.dragging.enable();
+        }
+        map.getContainer().classList.toggle("flight-brush-active", activeMapTool === "flight");
         updateMapToolsUi();
     }
 
@@ -2201,7 +2567,6 @@
             flightStrokes.push(flightCurrentStroke);
         }
         flightCurrentStroke = null;
-        map.dragging.enable();
         renderFlightBrush();
         updateMapToolsUi();
     }
@@ -2215,6 +2580,7 @@
                 <button type="button" data-tool="ruler" aria-pressed="false">Measure</button>
                 <button type="button" data-tool="los" aria-pressed="false" title="Create a terrain viewshed from one observer point">Line of sight</button>
                 <button type="button" data-tool="flight" aria-pressed="false">Flight brush</button>
+                <button type="button" data-tool="threat" aria-pressed="false" title="Show where one team's radars and air defences cover an aircraft at a chosen altitude">Threat cover</button>
                 <button type="button" data-tool="clear">Clear</button>
             </div>
             <div class="brush-options" hidden>
@@ -2230,7 +2596,25 @@
             <div class="los-options" hidden>
                 <label><span>Observer height</span><input data-tool="los-observer-height" type="number" min="0" max="1000" step="1" value="2" aria-label="Observer height above ground in metres"></label>
                 <label><span>Target height</span><input data-tool="los-target-height" type="number" min="0" max="1000" step="1" value="2" aria-label="Target height above ground in metres"></label>
-                <small class="los-hint">Green is visible terrain; red is hidden behind the terrain horizon.</small>
+                <small class="los-hint">Green: a target at this height above the surface is in view of the observer. Red: hidden behind terrain.</small>
+            </div>
+            <div class="threat-options" hidden>
+                <label><span>Threats from</span><select data-tool="threat-team" aria-label="Team whose radars and air defences are shown">
+                    <option value="1">REDFOR</option>
+                    <option value="2">BLUFOR</option>
+                </select></label>
+                <label><span>Altitude (m)</span><input data-tool="threat-altitude" type="number" min="0" max="20000" step="50" aria-label="Aircraft altitude in metres"></label>
+                <label><span>Measured</span><select data-tool="threat-altitude-mode" aria-label="Altitude reference">
+                    <option value="agl">Above ground</option>
+                    <option value="asl">Above sea level</option>
+                </select></label>
+                <div class="threat-legend">
+                    <span><i style="background: rgba(245, 101, 101, 0.8)"></i>Weapon range</span>
+                    <span><i style="background: rgba(246, 224, 94, 0.7)"></i>Radar coverage</span>
+                    <span><i style="background: rgba(26, 32, 44, 0.9)"></i>Below terrain</span>
+                </div>
+                <small class="los-hint">Range and terrain masking only: SAM altitude limits, radar ground clutter and Earth curvature are not modelled. Ships are shown at their spawn points.</small>
+                <div class="threat-status" aria-live="polite"></div>
             </div>
             <div class="map-tools-status" aria-live="polite"></div>
         `;
@@ -2242,6 +2626,38 @@
         rulerToolButton.addEventListener("click", () => setActiveMapTool("ruler"));
         flightToolButton.addEventListener("click", () => setActiveMapTool("flight"));
         losToolButton.addEventListener("click", () => setActiveMapTool("los"));
+        // Threat cover is an overlay, not a click tool, so it stays on while
+        // the ruler, LOS or flight brush is used.
+        threatToolButton = element.querySelector('[data-tool="threat"]');
+        threatOptions = element.querySelector(".threat-options");
+        threatStatus = element.querySelector(".threat-status");
+        threatToolButton.addEventListener("click", () => {
+            threatCoverEnabled = !threatCoverEnabled;
+            renderThreatCover();
+        });
+        const threatTeamInput = element.querySelector('[data-tool="threat-team"]');
+        const threatAltitudeInput = element.querySelector('[data-tool="threat-altitude"]');
+        const threatModeInput = element.querySelector('[data-tool="threat-altitude-mode"]');
+        threatTeamInput.value = String(threatTeam);
+        threatAltitudeInput.value = String(threatAltitude);
+        threatModeInput.value = threatAltitudeMode;
+        threatTeamInput.addEventListener("change", event => {
+            threatTeam = Number(event.target.value) === 2 ? 2 : 1;
+            saveUiState({ threatTeam });
+            renderThreatCover();
+        });
+        threatAltitudeInput.addEventListener("input", event => {
+            const value = Number(event.target.value);
+            if (!Number.isFinite(value) || value < 0) return;
+            threatAltitude = Math.min(20000, value);
+            saveUiState({ threatAltitude });
+            scheduleThreatCover();
+        });
+        threatModeInput.addEventListener("change", event => {
+            threatAltitudeMode = event.target.value === "asl" ? "asl" : "agl";
+            saveUiState({ threatAltitudeMode });
+            renderThreatCover();
+        });
         element.querySelector('[data-tool="clear"]').addEventListener("click", clearPlanningTools);
         flightBrushOptions = element.querySelector(".brush-options");
         losOptions = element.querySelector(".los-options");
@@ -2310,28 +2726,45 @@
         setActiveMapTool("ruler");
     });
 
-    map.on("mousedown", event => {
-        if (activeMapTool !== "flight" || event.originalEvent?.button !== 0) return;
+    // Pointer events cover mouse, pen and touch; Leaflet's mouse events
+    // never fire for a touch drag. Map dragging is disabled while the tool
+    // is active (setActiveMapTool), so the drag only draws.
+    const flightBrushSurface = map.getContainer();
+    flightBrushSurface.addEventListener("pointerdown", event => {
+        if (activeMapTool !== "flight") return;
+        if (event.target.closest(".leaflet-control-container, .leaflet-popup")) return;
+        if (!event.isPrimary) {
+            // A second finger means a pinch: drop the partial stroke.
+            flightCurrentStroke = null;
+            renderFlightBrush();
+            return;
+        }
+        if (event.button !== 0) return;
         flightCurrentStroke = {
-            points: [event.latlng],
+            points: [map.mouseEventToLatLng(event)],
             color: flightBrushColor,
             size: flightBrushSize
         };
-        map.dragging.disable();
-        event.originalEvent?.preventDefault();
+        // Keep receiving moves when the pointer leaves the map.
+        flightBrushSurface.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
     });
 
-    map.on("mousemove", event => {
-        if (!flightCurrentStroke) return;
+    flightBrushSurface.addEventListener("pointermove", event => {
+        if (!flightCurrentStroke || !event.isPrimary) return;
+        const latlng = map.mouseEventToLatLng(event);
         const points = flightCurrentStroke.points;
         const previous = points[points.length - 1];
-        if (Math.hypot(previous.lat - event.latlng.lat, previous.lng - event.latlng.lng) < 0.5) return;
-        points.push(event.latlng);
+        if (Math.hypot(previous.lat - latlng.lat, previous.lng - latlng.lng) < 0.5) return;
+        points.push(latlng);
         renderFlightBrush();
     });
 
-    map.on("mouseup", finishFlightStroke);
-    map.getContainer().addEventListener("mouseleave", finishFlightStroke);
+    ["pointerup", "pointercancel"].forEach(type =>
+        flightBrushSurface.addEventListener(type, event => {
+            if (event.isPrimary) finishFlightStroke();
+        })
+    );
 
     function makeVisibleLayerGroup() {
         return L.layerGroup().addTo(map);
@@ -2372,6 +2805,10 @@
     const DETAIL_ZOOM = 1.5;
     let focusedOverviewSite = null;
     let focusedOverviewMarker = null;
+    // A runway click highlights that airfield without selecting it. Keep it
+    // separate from focusedOverviewSite, which must always belong to
+    // focusedOverviewMarker so the marker returns to its own layer group.
+    let highlightedRunwaySite = null;
     const focusedOverviewSelections = new Map();
     // Grouped sites use a deliberate two-step interaction: first select the
     // site in place, then click the same marker again to expand and zoom.
@@ -2475,8 +2912,10 @@
     let selectedRouteKeys = new Set();
     let routeVisibilityKeys = null;
     let selectedDepotName = null;
-    const mapVariantStorageKey = "nuclear-thunder-map-variant";
-    let currentMapVariant = readSessionValue(mapVariantStorageKey) || "standard";
+    // activateMapVariant falls back to the map's default for an unknown id.
+    let currentMapVariant = typeof uiState.mapVariant === "string"
+        ? uiState.mapVariant
+        : "standard";
 
     function locationsByName(records) {
         return new Map(records.map(record => [record.name, record]));
@@ -2494,7 +2933,7 @@
             input.checked = definition.id === currentMapId;
             input.addEventListener("change", event => {
                 currentMapId = event.target.value;
-                writeSessionValue(mapSelectionStorageKey, currentMapId);
+                saveUiState({ map: currentMapId });
                 // Planning points are stored in image coordinates, which
                 // mean different world positions and scales on each map.
                 clearPlanningTools();
@@ -2507,11 +2946,17 @@
         });
     }
 
+    // Setting an unchanged URL still makes the browser request the image
+    // again, which doubled the large map download on startup.
+    function setOverlayUrl(layer, url) {
+        if (layer._url !== url) layer.setUrl(url);
+    }
+
     function refreshMapArtwork() {
         const definition = activeMapDefinition();
         updateTerrainLegendScale(definition);
-        standardMapLayer.setUrl(definition.image);
-        topographicMapLayer.setUrl(definition.terrainOverlay || definition.image);
+        setOverlayUrl(standardMapLayer, definition.image);
+        setOverlayUrl(topographicMapLayer, definition.terrainOverlay || definition.image);
         loadTerrainForMap(definition);
         if (!definition.supportsTerrain && map.hasLayer(topographicMapLayer)) {
             map.removeLayer(topographicMapLayer);
@@ -2588,24 +3033,35 @@
         const previouslySelected = options.value;
         options.replaceChildren();
         const presets = globalPresetData.presets || [];
+        const suffixFor = preset => {
+            const br = presetBrLabel(preset);
+            return br ? `[${br}]` : "";
+        };
+        // Native select options cannot contain flex markup. Right-align the
+        // BR suffixes in the (monospace) list by padding to the longest
+        // entry only, so the closed select stays narrow enough to show the
+        // full BR on phones as well.
+        const width = Math.max(0, ...presets.map(preset =>
+            preset.label.length + suffixFor(preset).length + 1
+        ));
         presets.forEach(preset => {
             const option = document.createElement("option");
             option.value = preset.id;
-            const br = presetBrLabel(preset);
-            const suffix = br ? `[${br}]` : "";
-            // Native select options cannot contain flex markup. Keep any
-            // official BR suffix right-spaced without inventing a bracket.
+            const suffix = suffixFor(preset);
             const gap = suffix
-                ? "\u00a0".repeat(Math.max(3, 35 - preset.label.length - suffix.length))
+                ? "\u00a0".repeat(Math.max(1, width - preset.label.length - suffix.length))
                 : "";
             option.textContent = `${preset.label}${gap}${suffix}`;
             options.append(option);
         });
         options.disabled = !presets.length;
-        options.value = presets.some(preset => preset.id === previouslySelected)
-            ? previouslySelected
-            : presets[0]?.id || "";
+        // A remembered scenario can disappear after a datamine update; only
+        // restore ids that still exist.
+        const restoredId = [previouslySelected, uiState.scenario]
+            .find(id => presets.some(preset => preset.id === id));
+        options.value = restoredId || presets[0]?.id || "";
         options.onchange = event => {
+            saveUiState({ scenario: event.target.value });
             renderMapData(event.target.value);
         };
     }
@@ -2640,7 +3096,7 @@
             variantId = definition.defaultVariant;
         }
         currentMapVariant = variantId;
-        writeSessionValue(mapVariantStorageKey, currentMapVariant);
+        saveUiState({ mapVariant: currentMapVariant });
         globalSiteData = globalMapVariants[currentMapVariant];
         globalMissionLogic = globalMissionLogicVariants[currentMapVariant];
         globalSiteLocations = locationsByName(globalSiteData);
@@ -3507,8 +3963,8 @@
 
     const ICON_TYPES_BY_FAMILY = {
         vanilla: new Set(["tracked", "tracked_radar_target", "spaa", "spaa_radar_target", "structure", "wheeled", "light_tank", "tank_destroyer", "ship"]),
-        pact: new Set(["tank", "spaa", "sam", "radar_station", "truck", "ifv", "mlrs", "tbm", "tank_destroyer", "ship", "boat", "destroyer", "missile_cruiser", "corvette", "aircraft_carrier", "battleship", "cruiser", "frigate", "heavy_cruiser", "fuel_storage", "tank_storage", "ammo_storage", "tank_radar_target", "sam_radar_target"]),
-        nato: new Set(["tank", "spaa", "sam", "radar_station", "truck", "ifv", "mlrs", "tbm", "tank_destroyer", "ship", "boat", "destroyer", "missile_cruiser", "corvette", "aircraft_carrier", "battleship", "cruiser", "frigate", "heavy_cruiser", "fuel_storage", "tank_storage", "ammo_storage", "tank_radar_target", "sam_radar_target"])
+        pact: new Set(["tank", "spaa", "sam", "radar_station", "truck", "ifv", "mlrs", "tbm", "tank_destroyer", "ship", "boat", "destroyer", "missile_cruiser", "corvette", "aircraft_carrier", "battleship", "cruiser", "frigate", "heavy_cruiser", "fuel_storage", "tank_storage", "ammo_storage", "tank_radar_target", "sam_radar_target", "radar_station_radar_target"]),
+        nato: new Set(["tank", "spaa", "sam", "radar_station", "truck", "ifv", "mlrs", "tbm", "tank_destroyer", "ship", "boat", "destroyer", "missile_cruiser", "corvette", "aircraft_carrier", "battleship", "cruiser", "frigate", "heavy_cruiser", "fuel_storage", "tank_storage", "ammo_storage", "tank_radar_target"])
     };
 
     function activeIconFamily() {
@@ -3574,15 +4030,23 @@
         // rather than requesting a missing image (which shows the browser's
         // broken-image placeholder).
         const available = ICON_TYPES_BY_FAMILY[family];
-        if (!available.has(type)) type = family === "vanilla" ? "tracked" : "tank";
+        if (!available.has(type)) {
+            const radarTarget = type.endsWith("_radar_target");
+            type = family === "vanilla"
+                ? (radarTarget ? "tracked_radar_target" : "tracked")
+                : (radarTarget ? "tank_radar_target" : "tank");
+        }
+        // Radar-target symbols already carry their suffix in the filename
+        // (def_ussr_tank_radar_target.svg); everything else ends in _radar.
+        const suffix = type.endsWith("_radar_target") ? "" : "_radar";
         let path;
         if (family === "vanilla") {
-            path = `images/icons/vanilla/def_${type}_radar.svg`;
+            path = `images/icons/vanilla/def_${type}${suffix}.svg`;
         } else if (family === "pact") {
-            path = `images/icons/pact/def_ussr_${type}_radar.svg`;
+            path = `images/icons/pact/def_ussr_${type}${suffix}.svg`;
         } else {
             const side = team === 1 ? "enemy" : "ally";
-            path = `images/icons/nato/def_nato_${side}_${type}_radar.svg`;
+            path = `images/icons/nato/def_nato_${side}_${type}${suffix}.svg`;
         }
         const vectorSource = vectorIconDataUri(
             team,
@@ -3769,26 +4233,65 @@
         const wikiArt = playableValue
             ? `${WIKI_IMAGE_BASE}${encodeURIComponent(playableValue)}.png`
             : null;
-        const sources = [...modelArt, wikiArt]
-            .filter((source, index, values) => source && values.indexOf(source) === index);
-        return { src: sources[0] || null, fallbacks: sources.slice(1) };
+        const candidates = [...modelArt, wikiArt].filter(Boolean);
+        const sources = usableImageSources(candidates);
+        // `missing`: art exists in principle but every candidate already
+        // failed, so cards keep their art slot (and its badges) as no-art.
+        return {
+            src: sources[0] || null,
+            fallbacks: sources.slice(1),
+            missing: candidates.length > 0 && !sources.length
+        };
     }
 
     function vehicleHoverImageUrl(name) {
         return slotArtUrls(name)[0] || null;
     }
 
+    // Image candidates that already failed on this page. Tooltip and card
+    // HTML is rebuilt every time it opens, so without this list each open
+    // requested the same missing slot/portrait files again.
+    const failedImageUrls = new Set();
+
+    function usableImageSources(sources) {
+        return [...new Set((sources || []).filter(Boolean))]
+            .filter(source => !failedImageUrls.has(source));
+    }
+
+    // Shared onerror handler for card and tooltip images. Remembers the
+    // failed URL, tries the next untried candidate, and otherwise applies
+    // the missing state: `hide` keeps the element but drops its source,
+    // `remove` deletes it and marks the parent as having no artwork.
+    function handleImageError(image, missing = "hide") {
+        const failed = image.getAttribute("src");
+        if (failed) failedImageUrls.add(failed);
+        const next = usableImageSources((image.dataset.fallbacks || "").split("|"));
+        if (next.length) {
+            image.dataset.fallbacks = next.slice(1).join("|");
+            image.src = next[0];
+            return;
+        }
+        if (missing === "remove") {
+            const parent = image.parentElement;
+            image.remove();
+            parent?.classList.add("no-art");
+        } else {
+            image.classList.add("is-missing");
+            image.removeAttribute("src");
+        }
+    }
+
     function fallbackImageHtml(sources, className, alt = "") {
-        const uniqueSources = [...new Set((sources || []).filter(Boolean))];
+        const uniqueSources = usableImageSources(sources);
         if (!uniqueSources.length) return "";
         const primary = uniqueSources[0];
         const fallbacks = uniqueSources.slice(1).join("|");
-        // Every missing candidate is tried at most once. The old hover
-        // handler assigned the same missing `_char` URL repeatedly, which
-        // produced an endless stream of console/network errors.
+        // Every missing candidate is tried at most once per page. The old
+        // hover handler assigned the same missing `_char` URL repeatedly,
+        // which produced an endless stream of console/network errors.
         return `<img class="${escapeHtml(className)}" src="${escapeHtml(primary)}" alt="${escapeHtml(alt)}"
             data-fallbacks="${escapeHtml(fallbacks)}"
-            onerror="const next=(this.dataset.fallbacks||'').split('|').filter(Boolean);if(next.length){this.dataset.fallbacks=next.slice(1).join('|');this.src=next[0];}else{this.classList.add('is-missing');this.removeAttribute('src');}">`;
+            onerror="handleImageError(this)">`;
     }
 
     function drawLogicSite(site) {
@@ -4087,6 +4590,28 @@
         return { kind, seconds: null, source: lifecycle.source || "unknown" };
     }
 
+    // Label a weapon's maximum range by what it fires. Guided weapons are
+    // missiles; unguided launchers (MLRS) are rockets; cannons and machine
+    // guns are guns. unit_specs.json exposes guidance and the weapon name.
+    function weaponRangeKind(weapon) {
+        const name = String(weapon?.name || "").toLowerCase();
+        if (weapon?.guidance) return "Missile";
+        if (/rocket|missile/.test(name)) return "Rocket";
+        if (/cannon|machinegun|gun/.test(name)) return "Gun";
+        return "Weapon";
+    }
+
+    function longestRangeWeapon(weapons) {
+        return (weapons || []).reduce((best, weapon) => {
+            const range = Number(weapon?.effective_maximum || 0);
+            const bestRange = Number(best?.effective_maximum || 0);
+            return !best || range > bestRange ||
+                (range === bestRange && weapon?.guidance && !best.guidance)
+                ? weapon
+                : best;
+        }, null);
+    }
+
     function unitCardHtml(unit, site, count = 1) {
         const name = String(unit.name || "unit");
         const role = String(unit.role || "vehicle");
@@ -4123,7 +4648,8 @@
         if (displayedEngagement > 0) {
             statEntries.push(["Engagement", formatDistance(displayedEngagement)]);
             if (physicalMissileMax > displayedEngagement) {
-                statEntries.push(["Missile max", formatDistance(physicalMissileMax)]);
+                const kind = weaponRangeKind(longestRangeWeapon(specs?.weapons));
+                statEntries.push([`${kind} max`, formatDistance(physicalMissileMax)]);
             }
         } else if (unit.threat_range) {
             statEntries.push(["Threat range", formatDistance(unit.threat_range)]);
@@ -4157,7 +4683,7 @@
             const rangeLabel = range
                 ? (physicalMissileMax > displayedEngagement &&
                     /_sam_launcher_|_tbm_|_mlrs_/.test(name.toLowerCase())
-                    ? ` missile max ${formatDistance(range)}`
+                    ? ` ${weaponRangeKind(weapon).toLowerCase()} max ${formatDistance(range)}`
                     : ` ${formatDistance(range)}`)
                 : "";
             return `<strong>${escapeHtml(displayName(weapon.name))}</strong>` +
@@ -4166,11 +4692,11 @@
         const weaponHtml = weaponLines.length
             ? `<p class="vehicle-card-weapons">${weaponLines.join("<br>")}</p>`
             : "";
-        const artHtml = vehicleImage.src
-            ? `<div class="vehicle-card-art-wrap">
-                <img class="vehicle-card-art" src="${escapeHtml(vehicleImage.src)}" alt=""
+        const artHtml = vehicleImage.src || vehicleImage.missing
+            ? `<div class="vehicle-card-art-wrap${vehicleImage.src ? "" : " no-art"}">
+                ${vehicleImage.src ? `<img class="vehicle-card-art" src="${escapeHtml(vehicleImage.src)}" alt=""
                     data-fallbacks="${escapeHtml(vehicleImage.fallbacks.join("|"))}"
-                    onerror="const sources=(this.dataset.fallbacks||'').split('|').filter(Boolean);if(sources.length){this.dataset.fallbacks=sources.slice(1).join('|');this.src=sources[0];}else{this.remove();this.parentElement.classList.add('no-art');}">
+                    onerror="handleImageError(this, 'remove')">` : ""}
                 ${repairsWithDepot
                     ? `<span class="vehicle-card-depot-context"><img src="images/icons/respawnbase_timer_ui.svg" alt=""><span>With depot</span>${depotTimerSeconds > 0 ? `<b>${escapeHtml(formatSeconds(depotTimerSeconds))}</b>` : ""}</span>`
                     : (timerSeconds > 0
@@ -4179,7 +4705,7 @@
                 ${count > 1 ? `<span class="vehicle-card-count">×${count}</span>` : ""}
             </div>`
             : "";
-        const headerCount = !vehicleImage.src && count > 1
+        const headerCount = !vehicleImage.src && !vehicleImage.missing && count > 1
             ? `<span class="vehicle-card-count">×${count}</span>`
             : "";
         return `
@@ -4253,6 +4779,7 @@
             globalMissionLogic?.rules?.resource_factory?.repair_seconds ||
             globalMissionLogic?.template_restore?.depot_repair_seconds
         );
+        const art = usableImageSources([data.art])[0];
         return `
             <article class="vehicle-card team-${escapeHtml(site.team)} building-card">
                 <div class="vehicle-card-header">
@@ -4260,8 +4787,8 @@
                     <span>${escapeHtml(data.label)}</span>
                     ${count > 1 ? `<span class="vehicle-card-count">×${count}</span>` : ""}
                 </div>
-                <div class="vehicle-card-art-wrap">
-                    <img class="vehicle-card-art" src="${escapeHtml(data.art)}" alt="" onerror="this.remove();this.parentElement.classList.add('no-art')">
+                <div class="vehicle-card-art-wrap${art ? "" : " no-art"}">
+                    ${art ? `<img class="vehicle-card-art" src="${escapeHtml(art)}" alt="" onerror="handleImageError(this, 'remove')">` : ""}
                     ${repairSeconds > 0 ? `<span class="vehicle-card-timer"><img src="images/icons/respawnbase_timer_ui.svg" alt="">${escapeHtml(formatSeconds(repairSeconds))}</span>` : ""}
                 </div>
                 <div class="vehicle-card-role">Structure · ${escapeHtml(site.name)}</div>
@@ -4667,6 +5194,7 @@
         }
         focusedOverviewMarker = null;
         focusedOverviewSite = null;
+        highlightedRunwaySite = null;
         focusedOverviewExpanded = false;
         focusedOverviewSelections.clear();
         if (!keepDetails) focusedDetailGroup.clearLayers();
@@ -4676,12 +5204,12 @@
     }
 
     function highlightAirfieldRunway(siteName) {
-        latestOverviewEntries
-            .filter(entry => entry.site.name === siteName && operationalCategory(entry.site) === "airfields")
-            .forEach(entry => {
-                focusedOverviewSite = entry;
-                refreshAirfieldRunwayStyles();
-            });
+        const entry = latestOverviewEntries.find(candidate =>
+            candidate.site.name === siteName && operationalCategory(candidate.site) === "airfields"
+        );
+        if (!entry) return;
+        highlightedRunwaySite = siteName;
+        refreshAirfieldRunwayStyles();
     }
 
     function refreshAirfieldRunwayStyles() {
@@ -4689,7 +5217,8 @@
         latestOverviewEntries
             .filter(entry => operationalCategory(entry.site) === "airfields")
             .forEach(entry => {
-                const focused = focusedOverviewSite?.site.name === entry.site.name;
+                const focused = focusedOverviewSite?.site.name === entry.site.name ||
+                    highlightedRunwaySite === entry.site.name;
                 const siteLayer = siteGroups[entry.site.team]?.airfields;
                 const layerVisible = !siteLayer || layerIsEnabled(siteLayer);
                 const highlighted = layerVisible && (focused || (
@@ -5092,22 +5621,23 @@
         }
 
         const hoverIcon = natoIconPath(site.team, unitIconType(unit, site));
-        const hoverImage = fallbackImageHtml([
-            ...slotArtUrls(name, specs?.model),
-            hoverIcon
-        ], "unit-hover-icon");
+        // Tooltip and card HTML are built on open so image candidates that
+        // already failed on this page are skipped instead of re-requested.
         const marker = L.marker(unitLatLng, {
             icon: natoIcon(site.team, unitIconType(unit, site), 30)
-        }).bindTooltip(`
+        }).bindTooltip(() => `
             <div class="unit-hover-tooltip">
-                ${hoverImage}
+                ${fallbackImageHtml([
+                    ...slotArtUrls(name, specs?.model),
+                    hoverIcon
+                ], "unit-hover-icon")}
                 <span class="unit-hover-text">
                     <b>${escapeHtml(displayName(name))}</b><br>
                     ${escapeHtml(displayName(role))}<br>
                     <small>${escapeHtml(site.name)}</small>
                 </span>
             </div>
-        `).bindPopup(unitCardHtml(unit, site)).addTo(targetGroup);
+        `).bindPopup(() => unitCardHtml(unit, site)).addTo(targetGroup);
         registerDetailLayer(site.name, marker);
         marker.on("click", event => {
             stopLeafletClick(event);
@@ -5167,7 +5697,7 @@
             Site: ${escapeHtml(site.name)}<br>
             Structure: ${escapeHtml(displayName(building.name))}<br>
             Position: [${x.toFixed(1)}, ${z.toFixed(1)}]
-        `).bindPopup(buildingCardHtml(building, site), { maxWidth: 360 })
+        `).bindPopup(() => buildingCardHtml(building, site), { maxWidth: 360 })
             .addTo(targetGroup);
         marker.on("click", event => {
             selectDepotRoutes(site, worldToLatLng(x, z), event, true);
@@ -5206,11 +5736,16 @@
         drawOverviewSites(selectedEra);
         renderSiteLegend();
         syncDetailVisibility();
+        // Scenario, side and map changes all redraw through here.
+        if (threatCoverEnabled) renderThreatCover();
     }
 
     document.getElementById("team-swap").addEventListener("click", () => {
         const definition = activeMapDefinition();
-        if (!definition.supportsTeamSwap) return;
+        // The button starts disabled and is enabled by updateTeamSwapUi once
+        // the map variants are loaded; guard as well in case it is clicked
+        // programmatically before then.
+        if (!definition.supportsTeamSwap || !globalSiteData.length) return;
         activateMapVariant(
             currentMapVariant === definition.mirroredVariant
                 ? definition.defaultVariant
@@ -5242,7 +5777,9 @@
         iconFamily = button.dataset.iconFamily === "vanilla" || button.dataset.iconFamily === "pact"
             ? button.dataset.iconFamily
             : "nato";
+        saveUiState({ iconFamily });
         renderIconFamilySelector();
+        refreshLayerFolderIcons();
         // Mission objective markers (including depot buildings) are created
         // while the active variant is drawn. Rebuild that variant as well as
         // the map units so every marker uses the newly selected icon family;
@@ -5366,6 +5903,7 @@
             globalUnitDisplayNames = unitDisplayNames || {};
             globalIconTemplates = iconTemplates || { nato: {}, vanilla: {}, pact: {}, aircraft: {} };
             renderIconFamilySelector();
+            refreshLayerFolderIcons();
             globalRoadData = roadData;
             globalRoadDataByMap = {
                 archipelago: roadData,
@@ -5616,18 +6154,22 @@
             const container = L.DomUtil.create("div", "grouped-layers", drawer);
             const toggle = L.DomUtil.create("button", "layers-drawer-toggle", drawer);
             toggle.type = "button";
-            toggle.textContent = "›";
-            toggle.setAttribute("aria-label", "Collapse layer controls");
-            toggle.setAttribute("aria-expanded", "true");
-            toggle.addEventListener("click", () => {
-                const collapsed = drawer.classList.toggle("is-collapsed");
+            function setDrawerCollapsed(collapsed) {
+                drawer.classList.toggle("is-collapsed", collapsed);
                 toggle.textContent = collapsed ? "‹" : "›";
                 toggle.setAttribute("aria-expanded", String(!collapsed));
                 toggle.setAttribute(
                     "aria-label",
                     collapsed ? "Expand layer controls" : "Collapse layer controls"
                 );
+            }
+            toggle.addEventListener("click", () => {
+                const collapsed = !drawer.classList.contains("is-collapsed");
+                setDrawerCollapsed(collapsed);
+                saveUiState({ layersCollapsed: collapsed });
             });
+            // The control is rebuilt on every map switch; keep its state.
+            setDrawerCollapsed(drawerStartsCollapsed(uiState.layersCollapsed));
             L.DomEvent.disableClickPropagation(drawer);
             L.DomEvent.disableScrollPropagation(drawer);
 
@@ -5720,6 +6262,10 @@
                     if (iconTypes.length > 1) icon.classList.add("multi");
                     iconTypes.forEach(iconType => {
                         const image = document.createElement("img");
+                        // Kept on the element so refreshLayerFolderIcons can
+                        // redraw it for another icon family.
+                        image.dataset.folderIconType = iconType;
+                        image.dataset.team = String(node.team ?? "");
                         image.src = natoIconPath(node.team, iconType);
                         image.alt = "";
                         icon.appendChild(image);
@@ -5872,6 +6418,16 @@
     }
 
     let groupedLayerControl = null;
+
+    // Redraw the drawer's folder icons in place (icon family change, or
+    // templates arriving after the first build) so open folders and the
+    // drawer's collapsed state are untouched.
+    function refreshLayerFolderIcons() {
+        document.querySelectorAll(".grouped-layers img[data-folder-icon-type]").forEach(image => {
+            const team = Number(image.dataset.team) || undefined;
+            image.src = natoIconPath(team, image.dataset.folderIconType);
+        });
+    }
 
     function rebuildGroupedLayerControl() {
         groupedLayerControl?.remove();

@@ -17,6 +17,13 @@ Community-built interactive reference map for War Thunder's Nuclear Escalation e
 - Use **Swap sides** on either map to load its game-defined mirrored mission,
   including the opposing-side site locations and mission routes.
 - Open folders in the map controls to show forces, airfields, depots, routes, and range overlays.
+- Use **Threat cover** in the map tools to shade where one team's radars
+  (yellow) and air-defence weapons (red) can see an aircraft at a chosen
+  altitude above ground or sea level, including terrain masking. It uses the
+  same extracted ranges as the range rings and does not model SAM altitude
+  limits, radar clutter, or Earth curvature.
+- The selected map, scenario, side, icon style, drawer states, and threat
+  settings are remembered in the browser between visits.
 - Click a unit to show its available sensor, weapon, reload, ammo, and respawn
   information. The legend also lists site compositions, convoy compositions,
   and mission-level respawn behavior.

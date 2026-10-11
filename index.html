@@ -5446,6 +5446,7 @@
             : "nato";
         saveUiState({ iconFamily });
         renderIconFamilySelector();
+        refreshLayerFolderIcons();
         // Mission objective markers (including depot buildings) are created
         // while the active variant is drawn. Rebuild that variant as well as
         // the map units so every marker uses the newly selected icon family;
@@ -5569,6 +5570,7 @@
             globalUnitDisplayNames = unitDisplayNames || {};
             globalIconTemplates = iconTemplates || { nato: {}, vanilla: {}, pact: {}, aircraft: {} };
             renderIconFamilySelector();
+            refreshLayerFolderIcons();
             globalRoadData = roadData;
             globalRoadDataByMap = {
                 archipelago: roadData,
@@ -5927,6 +5929,10 @@
                     if (iconTypes.length > 1) icon.classList.add("multi");
                     iconTypes.forEach(iconType => {
                         const image = document.createElement("img");
+                        // Kept on the element so refreshLayerFolderIcons can
+                        // redraw it for another icon family.
+                        image.dataset.folderIconType = iconType;
+                        image.dataset.team = String(node.team ?? "");
                         image.src = natoIconPath(node.team, iconType);
                         image.alt = "";
                         icon.appendChild(image);
@@ -6079,6 +6085,16 @@
     }
 
     let groupedLayerControl = null;
+
+    // Redraw the drawer's folder icons in place (icon family change, or
+    // templates arriving after the first build) so open folders and the
+    // drawer's collapsed state are untouched.
+    function refreshLayerFolderIcons() {
+        document.querySelectorAll(".grouped-layers img[data-folder-icon-type]").forEach(image => {
+            const team = Number(image.dataset.team) || undefined;
+            image.src = natoIconPath(team, image.dataset.folderIconType);
+        });
+    }
 
     function rebuildGroupedLayerControl() {
         groupedLayerControl?.remove();

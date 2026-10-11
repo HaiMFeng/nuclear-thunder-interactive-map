@@ -3823,26 +3823,65 @@
         const wikiArt = playableValue
             ? `${WIKI_IMAGE_BASE}${encodeURIComponent(playableValue)}.png`
             : null;
-        const sources = [...modelArt, wikiArt]
-            .filter((source, index, values) => source && values.indexOf(source) === index);
-        return { src: sources[0] || null, fallbacks: sources.slice(1) };
+        const candidates = [...modelArt, wikiArt].filter(Boolean);
+        const sources = usableImageSources(candidates);
+        // `missing`: art exists in principle but every candidate already
+        // failed, so cards keep their art slot (and its badges) as no-art.
+        return {
+            src: sources[0] || null,
+            fallbacks: sources.slice(1),
+            missing: candidates.length > 0 && !sources.length
+        };
     }
 
     function vehicleHoverImageUrl(name) {
         return slotArtUrls(name)[0] || null;
     }
 
+    // Image candidates that already failed on this page. Tooltip and card
+    // HTML is rebuilt every time it opens, so without this list each open
+    // requested the same missing slot/portrait files again.
+    const failedImageUrls = new Set();
+
+    function usableImageSources(sources) {
+        return [...new Set((sources || []).filter(Boolean))]
+            .filter(source => !failedImageUrls.has(source));
+    }
+
+    // Shared onerror handler for card and tooltip images. Remembers the
+    // failed URL, tries the next untried candidate, and otherwise applies
+    // the missing state: `hide` keeps the element but drops its source,
+    // `remove` deletes it and marks the parent as having no artwork.
+    function handleImageError(image, missing = "hide") {
+        const failed = image.getAttribute("src");
+        if (failed) failedImageUrls.add(failed);
+        const next = usableImageSources((image.dataset.fallbacks || "").split("|"));
+        if (next.length) {
+            image.dataset.fallbacks = next.slice(1).join("|");
+            image.src = next[0];
+            return;
+        }
+        if (missing === "remove") {
+            const parent = image.parentElement;
+            image.remove();
+            parent?.classList.add("no-art");
+        } else {
+            image.classList.add("is-missing");
+            image.removeAttribute("src");
+        }
+    }
+
     function fallbackImageHtml(sources, className, alt = "") {
-        const uniqueSources = [...new Set((sources || []).filter(Boolean))];
+        const uniqueSources = usableImageSources(sources);
         if (!uniqueSources.length) return "";
         const primary = uniqueSources[0];
         const fallbacks = uniqueSources.slice(1).join("|");
-        // Every missing candidate is tried at most once. The old hover
-        // handler assigned the same missing `_char` URL repeatedly, which
-        // produced an endless stream of console/network errors.
+        // Every missing candidate is tried at most once per page. The old
+        // hover handler assigned the same missing `_char` URL repeatedly,
+        // which produced an endless stream of console/network errors.
         return `<img class="${escapeHtml(className)}" src="${escapeHtml(primary)}" alt="${escapeHtml(alt)}"
             data-fallbacks="${escapeHtml(fallbacks)}"
-            onerror="const next=(this.dataset.fallbacks||'').split('|').filter(Boolean);if(next.length){this.dataset.fallbacks=next.slice(1).join('|');this.src=next[0];}else{this.classList.add('is-missing');this.removeAttribute('src');}">`;
+            onerror="handleImageError(this)">`;
     }
 
     function drawLogicSite(site) {
@@ -4220,11 +4259,11 @@
         const weaponHtml = weaponLines.length
             ? `<p class="vehicle-card-weapons">${weaponLines.join("<br>")}</p>`
             : "";
-        const artHtml = vehicleImage.src
-            ? `<div class="vehicle-card-art-wrap">
-                <img class="vehicle-card-art" src="${escapeHtml(vehicleImage.src)}" alt=""
+        const artHtml = vehicleImage.src || vehicleImage.missing
+            ? `<div class="vehicle-card-art-wrap${vehicleImage.src ? "" : " no-art"}">
+                ${vehicleImage.src ? `<img class="vehicle-card-art" src="${escapeHtml(vehicleImage.src)}" alt=""
                     data-fallbacks="${escapeHtml(vehicleImage.fallbacks.join("|"))}"
-                    onerror="const sources=(this.dataset.fallbacks||'').split('|').filter(Boolean);if(sources.length){this.dataset.fallbacks=sources.slice(1).join('|');this.src=sources[0];}else{this.remove();this.parentElement.classList.add('no-art');}">
+                    onerror="handleImageError(this, 'remove')">` : ""}
                 ${repairsWithDepot
                     ? `<span class="vehicle-card-depot-context"><img src="images/icons/respawnbase_timer_ui.svg" alt=""><span>With depot</span>${depotTimerSeconds > 0 ? `<b>${escapeHtml(formatSeconds(depotTimerSeconds))}</b>` : ""}</span>`
                     : (timerSeconds > 0
@@ -4233,7 +4272,7 @@
                 ${count > 1 ? `<span class="vehicle-card-count">×${count}</span>` : ""}
             </div>`
             : "";
-        const headerCount = !vehicleImage.src && count > 1
+        const headerCount = !vehicleImage.src && !vehicleImage.missing && count > 1
             ? `<span class="vehicle-card-count">×${count}</span>`
             : "";
         return `
@@ -4307,6 +4346,7 @@
             globalMissionLogic?.rules?.resource_factory?.repair_seconds ||
             globalMissionLogic?.template_restore?.depot_repair_seconds
         );
+        const art = usableImageSources([data.art])[0];
         return `
             <article class="vehicle-card team-${escapeHtml(site.team)} building-card">
                 <div class="vehicle-card-header">
@@ -4314,8 +4354,8 @@
                     <span>${escapeHtml(data.label)}</span>
                     ${count > 1 ? `<span class="vehicle-card-count">×${count}</span>` : ""}
                 </div>
-                <div class="vehicle-card-art-wrap">
-                    <img class="vehicle-card-art" src="${escapeHtml(data.art)}" alt="" onerror="this.remove();this.parentElement.classList.add('no-art')">
+                <div class="vehicle-card-art-wrap${art ? "" : " no-art"}">
+                    ${art ? `<img class="vehicle-card-art" src="${escapeHtml(art)}" alt="" onerror="handleImageError(this, 'remove')">` : ""}
                     ${repairSeconds > 0 ? `<span class="vehicle-card-timer"><img src="images/icons/respawnbase_timer_ui.svg" alt="">${escapeHtml(formatSeconds(repairSeconds))}</span>` : ""}
                 </div>
                 <div class="vehicle-card-role">Structure · ${escapeHtml(site.name)}</div>
@@ -5148,22 +5188,23 @@
         }
 
         const hoverIcon = natoIconPath(site.team, unitIconType(unit, site));
-        const hoverImage = fallbackImageHtml([
-            ...slotArtUrls(name, specs?.model),
-            hoverIcon
-        ], "unit-hover-icon");
+        // Tooltip and card HTML are built on open so image candidates that
+        // already failed on this page are skipped instead of re-requested.
         const marker = L.marker(unitLatLng, {
             icon: natoIcon(site.team, unitIconType(unit, site), 30)
-        }).bindTooltip(`
+        }).bindTooltip(() => `
             <div class="unit-hover-tooltip">
-                ${hoverImage}
+                ${fallbackImageHtml([
+                    ...slotArtUrls(name, specs?.model),
+                    hoverIcon
+                ], "unit-hover-icon")}
                 <span class="unit-hover-text">
                     <b>${escapeHtml(displayName(name))}</b><br>
                     ${escapeHtml(displayName(role))}<br>
                     <small>${escapeHtml(site.name)}</small>
                 </span>
             </div>
-        `).bindPopup(unitCardHtml(unit, site)).addTo(targetGroup);
+        `).bindPopup(() => unitCardHtml(unit, site)).addTo(targetGroup);
         registerDetailLayer(site.name, marker);
         marker.on("click", event => {
             stopLeafletClick(event);
@@ -5223,7 +5264,7 @@
             Site: ${escapeHtml(site.name)}<br>
             Structure: ${escapeHtml(displayName(building.name))}<br>
             Position: [${x.toFixed(1)}, ${z.toFixed(1)}]
-        `).bindPopup(buildingCardHtml(building, site), { maxWidth: 360 })
+        `).bindPopup(() => buildingCardHtml(building, site), { maxWidth: 360 })
             .addTo(targetGroup);
         marker.on("click", event => {
             selectDepotRoutes(site, worldToLatLng(x, z), event, true);

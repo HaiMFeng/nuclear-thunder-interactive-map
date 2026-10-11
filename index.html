@@ -1448,23 +1448,7 @@
             mapCoord1: [65536, 65536]
         }
     };
-    // sessionStorage can throw in privacy modes or sandboxed frames; the
-    // remembered side swap is only a convenience.
-    function readSessionValue(key) {
-        try {
-            return sessionStorage.getItem(key);
-        } catch (error) {
-            return null;
-        }
-    }
-    function writeSessionValue(key, value) {
-        try {
-            sessionStorage.setItem(key, value);
-        } catch (error) {
-            // Ignore: the selection simply is not remembered.
-        }
-    }
-    // Map, scenario and drawer choices persist between visits under one
+    // Map, scenario, side, icon and drawer choices persist between visits under one
     // namespaced key. Storage may be blocked or throw, and stored values may
     // be stale after a data update, so every consumer validates its field and
     // silently falls back to the default.
@@ -1490,9 +1474,11 @@
             // Ignore: the choice simply is not remembered.
         }
     }
-    // Keep the initial presentation aligned with the game's standard NATO
-    // tactical map. This is intentionally not persisted between sessions.
-    let iconFamily = "nato";
+    // NATO symbols match the game's standard tactical map and stay the
+    // default until another family is chosen.
+    let iconFamily = ["vanilla", "pact"].includes(uiState.iconFamily)
+        ? uiState.iconFamily
+        : "nato";
     let currentMapId = Object.keys(MAP_DEFINITIONS).includes(uiState.map)
         ? uiState.map
         : "archipelago";
@@ -2098,9 +2084,14 @@
                 if (x < 0 || x >= IMG_SIZE || y < 0 || y >= IMG_SIZE) continue;
                 const terrain = sampleTerrainElevation(L.latLng(y, x));
                 if (terrain === null) continue;
+                const distanceMeters = distancePixels * metersPerPixel;
+                // The horizon is formed by the ground; the target stands
+                // above it. Mixing the two would let a raised target hide
+                // everything behind it, shrinking the area as height grows.
+                const terrainAngle = Math.atan2(terrain - observerHeight, distanceMeters);
                 const targetAngle = Math.atan2(
                     terrain + losTargetHeight - observerHeight,
-                    distancePixels * metersPerPixel
+                    distanceMeters
                 );
                 const gridX = Math.min(LOS_GRID_SIZE - 1, Math.floor(x / pixelsPerCell));
                 const gridY = Math.min(LOS_GRID_SIZE - 1, Math.floor(y / pixelsPerCell));
@@ -2110,13 +2101,14 @@
                 // to the clicked observer position.
                 const imageRow = LOS_GRID_SIZE - 1 - gridY;
                 const cellIndex = imageRow * LOS_GRID_SIZE + gridX;
-                const visible = targetAngle >= horizonAngle - 0.0001;
-                if (visible) {
-                    horizonAngle = Math.max(horizonAngle, targetAngle);
+                // Rays overlap near the observer; any ray that sees the
+                // cell makes it visible, so the result is not order-dependent.
+                if (targetAngle >= horizonAngle - 0.0001) {
                     state[cellIndex] = 1;
-                } else {
+                } else if (state[cellIndex] !== 1) {
                     state[cellIndex] = 2;
                 }
+                horizonAngle = Math.max(horizonAngle, terrainAngle);
             }
         }
 
@@ -2275,7 +2267,7 @@
             <div class="los-options" hidden>
                 <label><span>Observer height</span><input data-tool="los-observer-height" type="number" min="0" max="1000" step="1" value="2" aria-label="Observer height above ground in metres"></label>
                 <label><span>Target height</span><input data-tool="los-target-height" type="number" min="0" max="1000" step="1" value="2" aria-label="Target height above ground in metres"></label>
-                <small class="los-hint">Green is visible terrain; red is hidden behind the terrain horizon.</small>
+                <small class="los-hint">Green: a target at this height above the surface is in view of the observer. Red: hidden behind terrain.</small>
             </div>
             <div class="map-tools-status" aria-live="polite"></div>
         `;
@@ -2520,8 +2512,10 @@
     let selectedRouteKeys = new Set();
     let routeVisibilityKeys = null;
     let selectedDepotName = null;
-    const mapVariantStorageKey = "nuclear-thunder-map-variant";
-    let currentMapVariant = readSessionValue(mapVariantStorageKey) || "standard";
+    // activateMapVariant falls back to the map's default for an unknown id.
+    let currentMapVariant = typeof uiState.mapVariant === "string"
+        ? uiState.mapVariant
+        : "standard";
 
     function locationsByName(records) {
         return new Map(records.map(record => [record.name, record]));
@@ -2688,7 +2682,7 @@
             variantId = definition.defaultVariant;
         }
         currentMapVariant = variantId;
-        writeSessionValue(mapVariantStorageKey, currentMapVariant);
+        saveUiState({ mapVariant: currentMapVariant });
         globalSiteData = globalMapVariants[currentMapVariant];
         globalMissionLogic = globalMissionLogicVariants[currentMapVariant];
         globalSiteLocations = locationsByName(globalSiteData);
@@ -5290,6 +5284,7 @@
         iconFamily = button.dataset.iconFamily === "vanilla" || button.dataset.iconFamily === "pact"
             ? button.dataset.iconFamily
             : "nato";
+        saveUiState({ iconFamily });
         renderIconFamilySelector();
         // Mission objective markers (including depot buildings) are created
         // while the active variant is drawn. Rebuild that variant as well as

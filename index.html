@@ -4188,6 +4188,28 @@
         return { kind, seconds: null, source: lifecycle.source || "unknown" };
     }
 
+    // Label a weapon's maximum range by what it fires. Guided weapons are
+    // missiles; unguided launchers (MLRS) are rockets; cannons and machine
+    // guns are guns. unit_specs.json exposes guidance and the weapon name.
+    function weaponRangeKind(weapon) {
+        const name = String(weapon?.name || "").toLowerCase();
+        if (weapon?.guidance) return "Missile";
+        if (/rocket|missile/.test(name)) return "Rocket";
+        if (/cannon|machinegun|gun/.test(name)) return "Gun";
+        return "Weapon";
+    }
+
+    function longestRangeWeapon(weapons) {
+        return (weapons || []).reduce((best, weapon) => {
+            const range = Number(weapon?.effective_maximum || 0);
+            const bestRange = Number(best?.effective_maximum || 0);
+            return !best || range > bestRange ||
+                (range === bestRange && weapon?.guidance && !best.guidance)
+                ? weapon
+                : best;
+        }, null);
+    }
+
     function unitCardHtml(unit, site, count = 1) {
         const name = String(unit.name || "unit");
         const role = String(unit.role || "vehicle");
@@ -4224,7 +4246,8 @@
         if (displayedEngagement > 0) {
             statEntries.push(["Engagement", formatDistance(displayedEngagement)]);
             if (physicalMissileMax > displayedEngagement) {
-                statEntries.push(["Missile max", formatDistance(physicalMissileMax)]);
+                const kind = weaponRangeKind(longestRangeWeapon(specs?.weapons));
+                statEntries.push([`${kind} max`, formatDistance(physicalMissileMax)]);
             }
         } else if (unit.threat_range) {
             statEntries.push(["Threat range", formatDistance(unit.threat_range)]);
@@ -4258,7 +4281,7 @@
             const rangeLabel = range
                 ? (physicalMissileMax > displayedEngagement &&
                     /_sam_launcher_|_tbm_|_mlrs_/.test(name.toLowerCase())
-                    ? ` missile max ${formatDistance(range)}`
+                    ? ` ${weaponRangeKind(weapon).toLowerCase()} max ${formatDistance(range)}`
                     : ` ${formatDistance(range)}`)
                 : "";
             return `<strong>${escapeHtml(displayName(weapon.name))}</strong>` +

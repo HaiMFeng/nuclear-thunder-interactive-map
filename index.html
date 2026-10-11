@@ -1593,6 +1593,20 @@
     // Rows run north to south like the source image.
     let terrainGrid = null;
     let terrainLoadToken = 0;
+    // Identifies the raster/decoding that terrainGrid holds or is loading,
+    // so repeated requests for the same definition do not fetch and decode
+    // the large height image again.
+    let terrainLoadKey = null;
+
+    // Only the fields that affect decoding. Metadata files also carry the
+    // image name and dimensions, which must not trigger a reload.
+    function terrainEncodingSignature(encoding) {
+        return JSON.stringify(["format", "min_m", "step_m", "range_m"].map(field =>
+            field === "format"
+                ? String(encoding?.format || "rg16")
+                : (Number.isFinite(Number(encoding?.[field])) ? Number(encoding[field]) : null)
+        ));
+    }
 
     function decodeTerrainPixels(rgba, width, height, encoding) {
         const heights = new Float32Array(width * height);
@@ -1636,6 +1650,12 @@
     }
 
     function loadTerrainForMap(definition) {
+        const loadKey = definition.terrainImage
+            ? `${definition.terrainImage}|${terrainEncodingSignature(definition.terrainEncoding)}`
+            : null;
+        // Already loaded or in flight for this exact raster and decoding.
+        if (loadKey && loadKey === terrainLoadKey) return;
+        terrainLoadKey = loadKey;
         terrainReadoutReady = false;
         terrainGrid = null;
         const token = ++terrainLoadToken;
@@ -1663,6 +1683,8 @@
             })
             .catch(error => {
                 if (token !== terrainLoadToken) return;
+                // Allow a later map switch to retry the failed raster.
+                terrainLoadKey = null;
                 console.error("Could not load terrain heights:", error);
                 if (terrainReadoutElement) {
                     terrainReadoutElement.textContent = "Terrain data could not be loaded for this map";
@@ -1759,11 +1781,11 @@
             .then(response => response.ok ? response.json() : null)
             .then(meta => {
                 if (!meta) return;
-                const previousEncoding = JSON.stringify(definition.terrainEncoding);
+                const previousEncoding = terrainEncodingSignature(definition.terrainEncoding);
                 applyTerrainMeta(definition, meta);
                 if (definition !== activeMapDefinition()) return;
                 updateTerrainLegendScale(definition);
-                if (JSON.stringify(definition.terrainEncoding) !== previousEncoding) {
+                if (terrainEncodingSignature(definition.terrainEncoding) !== previousEncoding) {
                     loadTerrainForMap(definition);
                 }
             })
@@ -2550,11 +2572,17 @@
         });
     }
 
+    // Setting an unchanged URL still makes the browser request the image
+    // again, which doubled the large map download on startup.
+    function setOverlayUrl(layer, url) {
+        if (layer._url !== url) layer.setUrl(url);
+    }
+
     function refreshMapArtwork() {
         const definition = activeMapDefinition();
         updateTerrainLegendScale(definition);
-        standardMapLayer.setUrl(definition.image);
-        topographicMapLayer.setUrl(definition.terrainOverlay || definition.image);
+        setOverlayUrl(standardMapLayer, definition.image);
+        setOverlayUrl(topographicMapLayer, definition.terrainOverlay || definition.image);
         loadTerrainForMap(definition);
         if (!definition.supportsTerrain && map.hasLayer(topographicMapLayer)) {
             map.removeLayer(topographicMapLayer);

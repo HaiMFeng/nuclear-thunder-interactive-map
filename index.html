@@ -1248,6 +1248,55 @@
 
         .los-options[hidden] { display: none; }
 
+        .threat-options {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            align-items: center;
+            gap: 5px 8px;
+            margin-top: 7px;
+            padding-top: 7px;
+            border-top: 1px solid #3b4252;
+        }
+
+        .threat-options[hidden] { display: none; }
+
+        .threat-options label { display: contents; }
+
+        .threat-options input,
+        .threat-options select {
+            box-sizing: border-box;
+            padding: 3px 5px;
+            border: 1px solid #4a5568;
+            border-radius: 3px;
+            color: #edf2f7;
+            background: #202734;
+            font: inherit;
+        }
+
+        .threat-options input { width: 80px; }
+
+        .threat-legend {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px 10px;
+            color: #a0aec0;
+        }
+
+        .threat-legend i {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            margin-right: 4px;
+            border-radius: 2px;
+            vertical-align: -1px;
+        }
+
+        .threat-status {
+            grid-column: 1 / -1;
+            color: #e2e8f0;
+        }
+
         .los-options label { display: contents; }
 
         .los-options input {
@@ -1406,6 +1455,11 @@
     const CITY_TERRAIN_HEIGHT_IMAGE = "generated/southeastern_city_heightmap/southeastern_city_height_16bit.webp";
     const IMG_SIZE = 4096;
     const LOS_GRID_SIZE = 256;
+    // Threat coverage sweeps every emitter across the whole map. Work grows
+    // with the square of range in cells, so cells are a fixed 512 m on every
+    // map (512 cells on Archipelago, 256 on the smaller City) to stay
+    // interactive.
+    const THREAT_CELL_METERS = 512;
     const CITY_MAP_IMAGE = "air_south_eastern_city_map.png";
     const MAP_DEFINITIONS = {
         archipelago: {
@@ -1698,6 +1752,7 @@
                     renderLineOfSight();
                     updateMapToolsUi();
                 }
+                if (threatCoverEnabled) renderThreatCover();
             })
             .catch(error => {
                 if (token !== terrainLoadToken) return;
@@ -1974,7 +2029,8 @@
     const planningLayers = {
         ruler: L.layerGroup().addTo(map),
         flight: L.layerGroup().addTo(map),
-        los: L.layerGroup().addTo(map)
+        los: L.layerGroup().addTo(map),
+        threat: L.layerGroup().addTo(map)
     };
     const planningPoints = { ruler: [], los: [] };
     const flightStrokes = [];
@@ -1990,6 +2046,15 @@
     let losToolButton;
     let flightBrushOptions;
     let losOptions;
+    let threatToolButton;
+    let threatOptions;
+    let threatStatus;
+    let threatCoverEnabled = false;
+    let threatTeam = uiState.threatTeam === 2 ? 2 : 1;
+    let threatAltitude = Number.isFinite(uiState.threatAltitude) && uiState.threatAltitude >= 0
+        ? Math.min(20000, uiState.threatAltitude)
+        : 100;
+    let threatAltitudeMode = uiState.threatAltitudeMode === "asl" ? "asl" : "agl";
 
     function mapLatLngToWorld(latlng) {
         const definition = activeMapDefinition();
@@ -2183,6 +2248,221 @@
         };
     }
 
+    // Radar and air-defence coverage for an aircraft at a chosen altitude.
+    // Each emitter of the selected team is swept like the LOS tool: the
+    // ground along a ray forms the horizon, and a cell is covered when an
+    // aircraft above it is within range and above that horizon. Ranges are
+    // the same extracted values as the range rings; altitude limits, radar
+    // clutter and Earth curvature are not modelled.
+    const THREAT_ANTENNA_HEIGHT = { ground: 10, ship: 20 };
+    const THREAT_AA_ROLES = new Set(["spaa", "launcher"]);
+
+    function threatGridSize(definition) {
+        const width = definition.mapCoord1[0] - definition.mapCoord0[0];
+        return Math.min(512, Math.max(128, Math.round(width / THREAT_CELL_METERS)));
+    }
+
+    function threatEmitters(team, era) {
+        const merged = new Map();
+        const cellPixels = IMG_SIZE / threatGridSize(activeMapDefinition());
+        globalSiteData.forEach(site => {
+            if (site.team !== team) return;
+            const ship = site.source_group === "ships";
+            (site.units_by_era?.[era] || []).forEach(unit => {
+                const specs = globalUnitSpecs[String(unit.name || "").toLowerCase()];
+                // Mission templates switch some air-defence radars off.
+                const radarOff = /radar_off/.test(String(unit.template || ""));
+                const threatSearch = Number(unit.threat_range);
+                const detection = radarOff ? 0 : Number(
+                    threatSearch > 0
+                        ? threatSearch
+                        : specs?.sensors?.detection?.nominal ||
+                            Math.max(...(specs?.sensors?.detection?.scope_ranges || []), 0)
+                ) || 0;
+                const tracking = radarOff ? 0 : Number(specs?.sensors?.tracking?.nominal || 0);
+                const role = String(unit.role || "").toLowerCase();
+                const engagement = ship || THREAT_AA_ROLES.has(role)
+                    ? displayEngagementRange(unit, specs) || 0
+                    : 0;
+                const radar = Math.max(detection, tracking);
+                if (!(radar > 0) && !(engagement > 0)) return;
+                const position = unit.world_pos || site.world_pos;
+                if (!position) return;
+                const [lat, lng] = worldToLatLng(position[0], position[2]);
+                const x = lng / cellPixels;
+                const y = lat / cellPixels;
+                // Launchers and radars of one battery share cells; sweep
+                // each cell once with the battery's longest ranges.
+                const key = `${Math.floor(x)},${Math.floor(y)},${ship ? "s" : "g"}`;
+                const entry = merged.get(key) || {
+                    x, y, ship, radar: 0, engagement: 0
+                };
+                entry.radar = Math.max(entry.radar, radar);
+                entry.engagement = Math.max(entry.engagement, engagement);
+                merged.set(key, entry);
+            });
+        });
+        return [...merged.values()];
+    }
+
+    function renderThreatCover() {
+        const layer = planningLayers.threat;
+        layer.clearLayers();
+        renderThreatCover.lastResult = null;
+        if (!threatCoverEnabled) {
+            updateThreatStatus();
+            return;
+        }
+        const definition = activeMapDefinition();
+        if (!definition.supportsTerrain || !terrainReadoutReady || !globalSiteData.length) {
+            updateThreatStatus();
+            return;
+        }
+        const size = threatGridSize(definition);
+        const cellPixels = IMG_SIZE / size;
+        const cellMeters = (
+            definition.mapCoord1[0] - definition.mapCoord0[0]
+        ) / size;
+        const waterLevel = Number(definition.waterLevel) || 0;
+        // Ground (or water surface) at each cell centre; grid rows run south
+        // to north like map latitude.
+        const ground = new Float32Array(size * size);
+        for (let row = 0; row < size; row += 1) {
+            for (let column = 0; column < size; column += 1) {
+                const height = terrainHeightAtMapPoint(
+                    (column + 0.5) * cellPixels,
+                    (row + 0.5) * cellPixels
+                );
+                ground[row * size + column] = Math.max(height ?? waterLevel, waterLevel);
+            }
+        }
+        const aboveGround = threatAltitudeMode === "agl";
+        const targetHeightAt = index => aboveGround
+            ? ground[index] + threatAltitude
+            : threatAltitude;
+        // 0 none, 1 radar coverage, 2 weapon coverage, 3 below the ground.
+        const cover = new Uint8Array(size * size);
+        if (!aboveGround) {
+            for (let index = 0; index < cover.length; index += 1) {
+                if (threatAltitude < ground[index]) cover[index] = 3;
+            }
+        }
+        const emitters = threatEmitters(threatTeam, selectedPresetId());
+        emitters.forEach(emitter => {
+            const range = Math.max(emitter.radar, emitter.engagement);
+            const originColumn = Math.min(size - 1, Math.max(0, Math.floor(emitter.x)));
+            const originRow = Math.min(size - 1, Math.max(0, Math.floor(emitter.y)));
+            const antenna = ground[originRow * size + originColumn] +
+                THREAT_ANTENNA_HEIGHT[emitter.ship ? "ship" : "ground"];
+            const mark = (index, distance) => {
+                if (cover[index] >= 2) return;
+                const rise = targetHeightAt(index) - antenna;
+                const slant = distance * distance + rise * rise;
+                if (emitter.engagement > 0 && slant <= emitter.engagement ** 2) {
+                    cover[index] = 2;
+                } else if (emitter.radar > 0 && slant <= emitter.radar ** 2 && cover[index] !== 3) {
+                    cover[index] = 1;
+                }
+            };
+            mark(originRow * size + originColumn, 0);
+            // Long-range radars reach far past the map edge; only the part
+            // up to the farthest grid corner needs rays.
+            const reachCells = Math.min(
+                range / cellMeters,
+                Math.max(
+                    Math.hypot(emitter.x, emitter.y),
+                    Math.hypot(size - emitter.x, emitter.y),
+                    Math.hypot(emitter.x, size - emitter.y),
+                    Math.hypot(size - emitter.x, size - emitter.y)
+                )
+            );
+            // Enough rays that neighbouring rays are under a cell apart at
+            // the edge of the reach.
+            const rayCount = Math.max(64, Math.ceil(Math.PI * 2 * reachCells * 1.5));
+            const steps = Math.ceil(reachCells);
+            for (let ray = 0; ray < rayCount; ray += 1) {
+                const angle = ray / rayCount * Math.PI * 2;
+                const directionX = Math.cos(angle);
+                const directionY = Math.sin(angle);
+                let horizon = -Infinity;
+                for (let step = 1; step <= steps; step += 1) {
+                    const column = Math.floor(emitter.x + directionX * step);
+                    const row = Math.floor(emitter.y + directionY * step);
+                    if (column < 0 || column >= size || row < 0 || row >= size) break;
+                    const index = row * size + column;
+                    const distance = step * cellMeters;
+                    const surface = ground[index];
+                    const target = targetHeightAt(index);
+                    if (target >= surface &&
+                        (target - antenna) / distance >= horizon - 1e-6) {
+                        mark(index, distance);
+                    }
+                    horizon = Math.max(horizon, (surface - antenna) / distance);
+                }
+            }
+        });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext("2d");
+        const image = context.createImageData(size, size);
+        const colours = {
+            1: [246, 224, 94, 88],
+            2: [245, 101, 101, 120],
+            3: [26, 32, 44, 150]
+        };
+        let radarCells = 0;
+        let weaponCells = 0;
+        for (let row = 0; row < size; row += 1) {
+            for (let column = 0; column < size; column += 1) {
+                const value = cover[row * size + column];
+                if (!value) continue;
+                if (value === 1) radarCells += 1;
+                if (value === 2) weaponCells += 1;
+                // Image rows run north to south; grid rows south to north.
+                const offset = ((size - 1 - row) * size + column) * 4;
+                image.data.set(colours[value], offset);
+            }
+        }
+        context.putImageData(image, 0, 0);
+        L.imageOverlay(canvas.toDataURL("image/png"), bounds, {
+            opacity: 1,
+            interactive: false,
+            className: "threat-cover-overlay"
+        }).addTo(layer);
+        renderThreatCover.lastResult = {
+            emitters: emitters.length,
+            radarPercent: Math.round((radarCells + weaponCells) / cover.length * 100),
+            weaponPercent: Math.round(weaponCells / cover.length * 100)
+        };
+        updateThreatStatus();
+    }
+
+    function updateThreatStatus() {
+        threatToolButton?.setAttribute("aria-pressed", String(threatCoverEnabled));
+        if (threatOptions) threatOptions.hidden = !threatCoverEnabled;
+        if (!threatStatus) return;
+        const result = renderThreatCover.lastResult;
+        if (!activeMapDefinition().supportsTerrain) {
+            threatStatus.textContent = "Terrain elevation is unavailable for this map.";
+        } else if (!terrainReadoutReady || !globalSiteData.length) {
+            threatStatus.textContent = "Loading terrain and site data…";
+        } else if (result) {
+            threatStatus.textContent = result.emitters
+                ? `${result.emitters} emitter positions · ${result.radarPercent}% of map in coverage · ${result.weaponPercent}% in weapon range.`
+                : "No radar or air defence for this team in this scenario.";
+        } else {
+            threatStatus.textContent = "";
+        }
+    }
+
+    let threatRenderTimer = null;
+    function scheduleThreatCover() {
+        clearTimeout(threatRenderTimer);
+        threatRenderTimer = setTimeout(renderThreatCover, 150);
+    }
+
     function updateMapToolsUi() {
         rulerToolButton?.setAttribute(
             "aria-pressed", String(activeMapTool === "ruler")
@@ -2300,6 +2580,7 @@
                 <button type="button" data-tool="ruler" aria-pressed="false">Measure</button>
                 <button type="button" data-tool="los" aria-pressed="false" title="Create a terrain viewshed from one observer point">Line of sight</button>
                 <button type="button" data-tool="flight" aria-pressed="false">Flight brush</button>
+                <button type="button" data-tool="threat" aria-pressed="false" title="Show where one team's radars and air defences cover an aircraft at a chosen altitude">Threat cover</button>
                 <button type="button" data-tool="clear">Clear</button>
             </div>
             <div class="brush-options" hidden>
@@ -2317,6 +2598,24 @@
                 <label><span>Target height</span><input data-tool="los-target-height" type="number" min="0" max="1000" step="1" value="2" aria-label="Target height above ground in metres"></label>
                 <small class="los-hint">Green: a target at this height above the surface is in view of the observer. Red: hidden behind terrain.</small>
             </div>
+            <div class="threat-options" hidden>
+                <label><span>Threats from</span><select data-tool="threat-team" aria-label="Team whose radars and air defences are shown">
+                    <option value="1">REDFOR</option>
+                    <option value="2">BLUFOR</option>
+                </select></label>
+                <label><span>Altitude (m)</span><input data-tool="threat-altitude" type="number" min="0" max="20000" step="50" aria-label="Aircraft altitude in metres"></label>
+                <label><span>Measured</span><select data-tool="threat-altitude-mode" aria-label="Altitude reference">
+                    <option value="agl">Above ground</option>
+                    <option value="asl">Above sea level</option>
+                </select></label>
+                <div class="threat-legend">
+                    <span><i style="background: rgba(245, 101, 101, 0.8)"></i>Weapon range</span>
+                    <span><i style="background: rgba(246, 224, 94, 0.7)"></i>Radar coverage</span>
+                    <span><i style="background: rgba(26, 32, 44, 0.9)"></i>Below terrain</span>
+                </div>
+                <small class="los-hint">Range and terrain masking only: SAM altitude limits, radar ground clutter and Earth curvature are not modelled. Ships are shown at their spawn points.</small>
+                <div class="threat-status" aria-live="polite"></div>
+            </div>
             <div class="map-tools-status" aria-live="polite"></div>
         `;
         L.DomEvent.disableClickPropagation(element);
@@ -2327,6 +2626,38 @@
         rulerToolButton.addEventListener("click", () => setActiveMapTool("ruler"));
         flightToolButton.addEventListener("click", () => setActiveMapTool("flight"));
         losToolButton.addEventListener("click", () => setActiveMapTool("los"));
+        // Threat cover is an overlay, not a click tool, so it stays on while
+        // the ruler, LOS or flight brush is used.
+        threatToolButton = element.querySelector('[data-tool="threat"]');
+        threatOptions = element.querySelector(".threat-options");
+        threatStatus = element.querySelector(".threat-status");
+        threatToolButton.addEventListener("click", () => {
+            threatCoverEnabled = !threatCoverEnabled;
+            renderThreatCover();
+        });
+        const threatTeamInput = element.querySelector('[data-tool="threat-team"]');
+        const threatAltitudeInput = element.querySelector('[data-tool="threat-altitude"]');
+        const threatModeInput = element.querySelector('[data-tool="threat-altitude-mode"]');
+        threatTeamInput.value = String(threatTeam);
+        threatAltitudeInput.value = String(threatAltitude);
+        threatModeInput.value = threatAltitudeMode;
+        threatTeamInput.addEventListener("change", event => {
+            threatTeam = Number(event.target.value) === 2 ? 2 : 1;
+            saveUiState({ threatTeam });
+            renderThreatCover();
+        });
+        threatAltitudeInput.addEventListener("input", event => {
+            const value = Number(event.target.value);
+            if (!Number.isFinite(value) || value < 0) return;
+            threatAltitude = Math.min(20000, value);
+            saveUiState({ threatAltitude });
+            scheduleThreatCover();
+        });
+        threatModeInput.addEventListener("change", event => {
+            threatAltitudeMode = event.target.value === "asl" ? "asl" : "agl";
+            saveUiState({ threatAltitudeMode });
+            renderThreatCover();
+        });
         element.querySelector('[data-tool="clear"]').addEventListener("click", clearPlanningTools);
         flightBrushOptions = element.querySelector(".brush-options");
         losOptions = element.querySelector(".los-options");
@@ -5405,6 +5736,8 @@
         drawOverviewSites(selectedEra);
         renderSiteLegend();
         syncDetailVisibility();
+        // Scenario, side and map changes all redraw through here.
+        if (threatCoverEnabled) renderThreatCover();
     }
 
     document.getElementById("team-swap").addEventListener("click", () => {

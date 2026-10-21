@@ -1651,6 +1651,7 @@
         setInfoPanelCollapsed(infoPanel.classList.contains("is-collapsed"));
         setCompositionWindowCollapsed(compositionWindow.classList.contains("is-collapsed"));
         refreshTerrainLegendCopy();
+        refreshTerrainReadoutCopy();
         refreshRangeDisclaimerCopy();
         updateMapToolsUi();
         updateThreatStatus();
@@ -2078,8 +2079,13 @@
             "div",
             "terrain-readout"
         );
-        terrainReadoutElement.textContent =
-            "Terrain: loading compiled height data…";
+        // The packs may still be in flight here, so keep readable English as
+        // the fallback; refreshTerrainReadoutCopy() retranslates it later.
+        terrainReadoutElement.textContent = t(
+            "terrain.loading",
+            null,
+            "Terrain: loading compiled height data…"
+        );
         return terrainReadoutElement;
     };
     terrainReadoutControl.addTo(map);
@@ -2115,6 +2121,15 @@
         updateTerrainLegendScale(activeMapDefinition());
     }
 
+    // The readout also carries live coordinates, so it cannot be driven by
+    // data-i18n; only the placeholder is retranslated after a locale switch.
+    function refreshTerrainReadoutCopy() {
+        if (!terrainReadoutElement || terrainReadoutReady) return;
+        // A finished or failed load has already written its own message.
+        if (!terrainLoadKey) return;
+        terrainReadoutElement.textContent = t("terrain.loading");
+    }
+
     function updateTerrainLegendScale(definition) {
         if (!terrainLegendElement) return;
         const [minimum, maximum] = (definition?.terrainDisplayRange || []).map(Number);
@@ -2123,8 +2138,8 @@
             : "";
         const minLabel = terrainLegendElement.querySelector("[data-terrain-min]");
         const maxLabel = terrainLegendElement.querySelector("[data-terrain-max]");
-        if (minLabel) minLabel.textContent = format(minimum) || "low";
-        if (maxLabel) maxLabel.textContent = format(maximum) || "high";
+        if (minLabel) minLabel.textContent = format(minimum) || t("terrain.low");
+        if (maxLabel) maxLabel.textContent = format(maximum) || t("terrain.high");
     }
 
     Object.values(MAP_DEFINITIONS).forEach(definition => {
@@ -3580,15 +3595,22 @@
         }
 
         const color = site.team === 1 ? "#fc8181" : site.team === 2 ? "#90cdf4" : "#cbd5e0";
-        const speed = route.speed == null ? "" : `<br>Stored speed: ${escapeHtml(route.speed)}`;
+        const speed = route.speed == null
+            ? ""
+            : `<br>${escapeHtml(t("route.storedSpeed", { speed: route.speed }))}`;
         L.polyline(positions, {
             color,
             weight: 2,
             opacity: 0.8,
             dashArray: "7, 5"
         }).bindTooltip(`
-            <b>${escapeHtml(site.name)} patrol route</b><br>
-            ${route.points.length} waypoints · ${route.closed ? "closed loop" : "open route"}
+            <b>${escapeHtml(t("route.patrolTitle", {
+                site: siteDisplayName(site)
+            }))}</b><br>
+            ${escapeHtml(t("route.waypoints", {
+                count: formatNumber(route.points.length),
+                shape: t(route.closed ? "route.closedLoop" : "route.openRoute")
+            }))}
             ${speed}
         `).addTo((missionGroups[site.team] || missionGroups[1]).fleet.routes);
     }
@@ -4639,8 +4661,8 @@
         const position = worldToLatLng(x, z);
         const category = logicSiteLabel(site.category);
         const tooltip = `
-            <b>${escapeHtml(site.name)}</b><br>
-            ${escapeHtml(category)} · ${escapeHtml(t("logic.team", { team: site.team }))}<br>
+            <b>${escapeHtml(category)}</b><br>
+            ${escapeHtml(t("logic.team", { team: site.team }))}<br>
             ${escapeHtml(t("logic.captureRadius", {
                 radius: formatNumber(Math.round(Number(site.capture_radius)))
             }))}
@@ -4670,8 +4692,8 @@
                 pane: "depotMarkers",
                 zIndexOffset: 300,
                 riseOnHover: true
-            }).bindTooltip(
-                `${tooltip}<br><i>Click to highlight this depot's routes</i>`
+            }            ).bindTooltip(
+                `${tooltip}<br><i>${escapeHtml(t("route.depotHint"))}</i>`
             ).addTo(categoryGroup.objectives);
             const sourceSite = globalSiteLocations.get(site.name);
             const mainBuildingFor = presetId =>
@@ -4736,14 +4758,16 @@
                 weight: 2
             }).bindTooltip(`
                 <b>${escapeHtml(unit.name)}</b><br>
-                ${typeLabel} randomized spawn area<br>
-                Radius: ${Number(unit.spawn_area.radius).toFixed(0)} m
+                ${escapeHtml(t("unit.spawnArea", { kind: typeLabel }))}<br>
+                ${escapeHtml(t("unit.spawnRadius", {
+                    radius: Number(unit.spawn_area.radius).toFixed(0)
+                }))}
             `).addTo(spawnGroup);
             L.marker(worldToLatLng(x, z), {
                 icon: natoIcon(unit.team, isMlrs ? "mlrs" : "tbm", 30)
             }).bindTooltip(`
                 <b>${escapeHtml(unit.name)}</b><br>
-                Representative marker at randomized spawn-area centre
+                ${escapeHtml(t("unit.spawnMarker"))}
             `).addTo(spawnGroup);
         }
 
@@ -4759,8 +4783,13 @@
                 dashArray: "6, 5"
             }).bindTooltip(`
                 <b>${escapeHtml(unit.name)}</b><br>
-                ${typeLabel} relocation destination ${index + 1}<br>
-                AI drives to the centre · ${Number(area.radius).toFixed(0)} m editor area
+                ${escapeHtml(t("unit.relocation", {
+                    kind: typeLabel,
+                    index: index + 1
+                }))}<br>
+                ${escapeHtml(t("unit.relocationDetail", {
+                    radius: Number(area.radius).toFixed(0)
+                }))}
             `).addTo(moveGroup);
             L.circleMarker(position, {
                 radius: 3,
@@ -4949,7 +4978,13 @@
     // Mission roles are internal enum values; translate the ones we know and
     // fall back to the identifier cleanup so new roles still render.
     function roleLabel(role) {
-        const key = `role.${String(role || "vehicle").toLowerCase()}`;
+        // Convoy data writes roles such as "SPAA escort", so normalise the
+        // spacing before looking the key up.
+        const normalized = String(role || "vehicle")
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, "_");
+        const key = `role.${normalized}`;
         return hasTranslation(key) ? t(key) : displayName(role);
     }
 
@@ -5153,7 +5188,7 @@
                     ${art ? `<img class="vehicle-card-art" src="${escapeHtml(art)}" alt="" onerror="handleImageError(this, 'remove')">` : ""}
                     ${repairSeconds > 0 ? `<span class="vehicle-card-timer"><img src="images/icons/respawnbase_timer_ui.svg" alt="">${escapeHtml(formatSeconds(repairSeconds))}</span>` : ""}
                 </div>
-                <div class="vehicle-card-role">${escapeHtml(t("building.structure", { site: site.name }))}</div>
+                <div class="vehicle-card-role">${escapeHtml(t("building.structure", { site: siteDisplayName(site) }))}</div>
                 <div class="vehicle-card-stats">
                     <span class="vehicle-card-stat">${escapeHtml(t("building.integrity"))}<b>${escapeHtml(t("building.hp", { hp: formatNumber(data.hp) }))}</b></span>
                 </div>
@@ -5169,7 +5204,7 @@
         return `
             <section class="airfield-popup team-${escapeHtml(site.team)}">
                 <h2 class="site-popup-title">${escapeHtml(t(isMain ? "airfield.main" : "airfield.front"))}</h2>
-                <p class="airfield-popup-meta">${escapeHtml(site.name)} · ${escapeHtml(t("building.hp", { hp: formatNumber(hp) }))}</p>
+                <p class="airfield-popup-meta">${escapeHtml(siteDisplayName(site))} · ${escapeHtml(t("building.hp", { hp: formatNumber(hp) }))}</p>
                 <h3>${escapeHtml(t("airfield.defence"))}</h3>
                 <ul class="airfield-popup-composition">
                     ${units.length
@@ -5195,6 +5230,12 @@
         const type = siteTypeLabel(operationalCategory(site));
         if (siteCount > 1) return `${prefix} ${type} ×${siteCount}`;
         return `${prefix} ${type}${number ? ` ${number}` : ""}`;
+    }
+
+    // Site names are mission identifiers such as t1_longrange_radar_squad, so
+    // user-facing labels use the localized team and site type instead.
+    function siteDisplayName(site) {
+        return compositionSiteLabel(site || {});
     }
 
     function compactSiteUnits(units) {
@@ -5276,8 +5317,11 @@
     function convoyEraKey(presetId) {
         // Preset labels are generated from the active mission templates
         // (build_map_data.py), so they name the same era as the convoy
-        // templates without hard-coding rank boundaries here.
-        const label = presetDisplayName(presetId).toLowerCase();
+        // templates without hard-coding rank boundaries here. The data label
+        // is English on purpose: parsing the translated label would make the
+        // era lookup depend on the active language.
+        const preset = globalPresetData.presets?.find(item => item.id === presetId);
+        const label = String(preset?.label || presetId || "").toLowerCase();
         if (label.includes("1970") && label.includes("early")) return "1970_early";
         if (label.includes("1970") && label.includes("late")) return "1970_late";
         if (label.includes("1980")) return "1980";
@@ -5347,6 +5391,38 @@
             convoyCards(armored.spg?.[side], legendTeam, convoyTitle("convoy.spg"));
     }
 
+    // The extractor names respawn systems in English; known names have pack
+    // entries, anything new still renders through the identifier cleanup.
+    const RESPAWN_SYSTEM_KEYS = {
+        "long-range radar": "respawnSystem.longRangeRadar",
+        mlrs: "respawnSystem.mlrs",
+        tbm: "respawnSystem.tbm"
+    };
+
+    function respawnSystemLabel(system) {
+        const key = RESPAWN_SYSTEM_KEYS[String(system || "").toLowerCase()];
+        return key && hasTranslation(key) ? t(key) : displayName(system);
+    }
+
+    // Same for the systems without a fixed timer: the extractor writes whole
+    // sentences, so match on their prefix and keep the raw text as a fallback.
+    const NO_FIXED_RESPAWN_KEYS = [
+        [/^sam-site launchers/, "respawn.noFixed.sam"],
+        [/^airfield aa/, "respawn.noFixed.airfieldAA"],
+        [/^strongpoint vehicles/, "respawn.noFixed.strongpoints"],
+        [/^airfields/, "respawn.noFixed.airfields"],
+        [/^ships/, "respawn.noFixed.ships"],
+        [/^dynamically produced/, "respawn.noFixed.convoys"]
+    ];
+
+    function noFixedRespawnLabel(system) {
+        const value = String(system || "");
+        const match = NO_FIXED_RESPAWN_KEYS.find(
+            ([pattern]) => pattern.test(value.toLowerCase())
+        );
+        return match && hasTranslation(match[1]) ? t(match[1]) : value;
+    }
+
     function respawnLegendHtml() {
         const rules = globalMissionLogic?.respawn_rules || [];
         const grouped = new Map();
@@ -5357,15 +5433,18 @@
             grouped.set(key, entry);
         });
         const fixed = [...grouped.values()].map(({ rule, count }) =>
-            `<p><b>${escapeHtml(rule.system)}:</b> ${escapeHtml(formatSeconds(rule.seconds))} ${escapeHtml(t(rule.mode === "restore" ? "respawn.restore" : "respawn.respawn"))}${count > 1 ? escapeHtml(t("respawn.units", { count: formatNumber(count) })) : ""}</p>`
+            `<p><b>${escapeHtml(respawnSystemLabel(rule.system))}:</b> ${escapeHtml(formatSeconds(rule.seconds))} ${escapeHtml(t(rule.mode === "restore" ? "respawn.restore" : "respawn.respawn"))}${count > 1 ? escapeHtml(t("respawn.units", { count: formatNumber(count) })) : ""}</p>`
         ).join("");
-        const noFixed = globalMissionLogic?.no_fixed_respawn || [
-            t("respawn.noFixed.sam"),
-            t("respawn.noFixed.strongpoints"),
-            t("respawn.noFixed.airfields"),
-            t("respawn.noFixed.ships"),
-            t("respawn.noFixed.convoys")
-        ];
+        const noFixed = (globalMissionLogic?.no_fixed_respawn || []).length
+            ? globalMissionLogic.no_fixed_respawn.map(noFixedRespawnLabel)
+            : [
+                t("respawn.noFixed.sam"),
+                t("respawn.noFixed.airfieldAA"),
+                t("respawn.noFixed.strongpoints"),
+                t("respawn.noFixed.airfields"),
+                t("respawn.noFixed.ships"),
+                t("respawn.noFixed.convoys")
+            ];
         const templateRestoreSeconds = Number(globalMissionLogic?.template_restore?.restore_seconds);
         const templateLine = templateRestoreSeconds > 0
             ? `<p><b>${escapeHtml(t("respawn.template"))}</b> ${escapeHtml(formatSeconds(templateRestoreSeconds))}.</p>`
@@ -5880,7 +5959,9 @@
                     ${groupedCompositions.length ? groupedCompositions.map(group => {
                         const { entry, entries } = group;
                         const count = entries.length;
-                        const locations = entries.map(candidate => candidate.site.name).join(" · ");
+                        const locations = entries
+                            .map(candidate => siteDisplayName(candidate.site))
+                            .join(" · ");
                         return `
                         <details class="composition-site team-${entry.site.team}" open>
                             <summary>${escapeHtml(compositionSiteLabel(entry.site, count))}</summary>
@@ -6004,8 +6085,8 @@
                 ], "unit-hover-icon")}
                 <span class="unit-hover-text">
                     <b>${escapeHtml(displayName(name))}</b><br>
-                    ${escapeHtml(displayName(role))}<br>
-                    <small>${escapeHtml(site.name)}</small>
+                    ${escapeHtml(roleLabel(role))}<br>
+                    <small>${escapeHtml(siteDisplayName(site))}</small>
                 </span>
             </div>
         `).bindPopup(() => unitCardHtml(unit, site)).addTo(targetGroup);
@@ -6065,7 +6146,7 @@
         }).bindTooltip(`
             <b>${escapeHtml(t(data.labelKey))}</b><br>
             ${escapeHtml(t("building.hp", { hp: formatNumber(data.hp) }))}<br>
-            ${escapeHtml(t("building.site", { site: site.name }))}<br>
+            ${escapeHtml(t("building.site", { site: siteDisplayName(site) }))}<br>
             ${escapeHtml(t("building.kind", { structure: displayName(building.name) }))}<br>
             ${escapeHtml(t("building.position", {
                 x: x.toFixed(1),
@@ -6617,10 +6698,10 @@
                     anyVisible && !allVisible
                 );
                 node.eyeButton.title = hasSnapshot || inheritedSnapshot
-                    ? `Restore previous ${node.title}`
+                    ? t("layers.restorePrevious", { title: node.title })
                     : anyVisible
-                        ? `Hide all ${node.title}`
-                        : `Show all ${node.title}`;
+                        ? t("layers.hideAll", { title: node.title })
+                        : t("layers.showAll", { title: node.title });
                 node.eyeButton.setAttribute(
                     "aria-label",
                     node.eyeButton.title

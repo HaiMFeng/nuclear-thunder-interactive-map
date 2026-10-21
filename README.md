@@ -131,6 +131,11 @@ missing or half-finished pack never blanks the UI. Add a language by copying
 `I18N_SUPPORTED_LOCALES` in `index.html`; the language selector is built from
 that list.
 
+Each pack names itself through its own `language.nativeName` entry (for example
+`"English"` or `"简体中文"`), so the selector shows languages in their native
+form and no pack has to carry translations for the others. Keep that value in
+the language's own script; the locale id is only a fallback when it is missing.
+
 Keys and `{placeholder}` names must match the English pack exactly, and every
 `t("key")` or `data-i18n` key in the page must exist. `tools/check_frontend.js`
 enforces both, so a stale translation fails CI before it reaches the map.

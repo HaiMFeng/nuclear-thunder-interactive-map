@@ -1,7 +1,6 @@
 {
   "language.label": "语言",
-  "language.en": "英语",
-  "language.zh-CN": "简体中文",
+  "language.nativeName": "简体中文",
 
   "app.title": "Nuclear Thunder 互动地图",
   "app.updated": "更新于 {version}",
@@ -12,14 +11,14 @@
 
   "map.label": "地图",
   "map.loading": "正在加载地图…",
-  "map.archipelago": "群岛",
-  "map.city": "东南城市",
+  "map.archipelago": "热带海岸",
+  "map.city": "东南渔湾",
   "map.unavailable": "该地图没有地形数据",
 
   "variant.standard": "标准位置",
   "variant.mirror": "交换位置",
-  "variant.city": "东南城市",
-  "variant.city_mirror": "东南城市 — 交换位置",
+  "variant.city": "东南渔湾",
+  "variant.city_mirror": "东南渔湾 — 交换位置",
 
   "scenario.label": "场景",
   "scenario.loading": "正在加载场景…",
@@ -38,7 +37,7 @@
   "swap.unavailable": "交换阵营（不可用）",
 
   "icons.label": "图标样式",
-  "icons.vanilla": "WT 图标",
+  "icons.vanilla": "战雷图标",
   "icons.nato": "北约图标",
   "icons.pact": "苏联图标",
 
@@ -50,7 +49,7 @@
   "legend.teamLabel": "图例编成阵营",
   "legend.category.strongpoints": "据点",
   "legend.category.vehicleDepots": "载具仓库",
-  "legend.category.fuelAmmoDepots": "油料/弹药库",
+  "legend.category.fuelAmmoDepots": "油库/弹药库",
   "legend.category.shortSams": "近程防空",
   "legend.category.longSams": "远程防空",
   "legend.category.ewRadars": "预警雷达",
@@ -72,7 +71,7 @@
   "siteType.strategic": "战略发射单元",
   "siteType.fleet": "舰艇巡逻编队",
   "siteType.vehicleDepots": "载具仓库",
-  "siteType.fuelAmmoDepots": "油料/弹药库",
+  "siteType.fuelAmmoDepots": "油库/弹药库",
   "siteType.strongpoints": "据点",
   "siteType.groundSite": "地面点位",
 
@@ -259,7 +258,7 @@
   "layers.gravelSandRoads": "碎石/沙土路",
   "layers.strongpoints": "据点",
   "layers.vehicleDepots": "载具仓库",
-  "layers.fuelAmmoDepots": "油料/弹药库",
+  "layers.fuelAmmoDepots": "油库/弹药库",
   "layers.shortSams": "近程防空",
   "layers.longSams": "远程防空",
   "layers.ewRadars": "预警雷达",

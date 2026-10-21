@@ -1,7 +1,6 @@
 {
   "language.label": "Language",
-  "language.en": "English",
-  "language.zh-CN": "Simplified Chinese",
+  "language.nativeName": "English",
 
   "app.title": "Nuclear Thunder Interactive Map",
   "app.updated": "Updated {version}",

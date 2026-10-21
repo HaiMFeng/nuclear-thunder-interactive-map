@@ -1615,6 +1615,13 @@
         });
     }
 
+    // Every pack names its own language, so a selector label never depends on
+    // another pack translating it; the locale code is the last resort.
+    function nativeLanguageName(locale) {
+        const native = i18nLookup(locale, "language.nativeName");
+        return typeof native === "string" && native.trim() ? native : locale;
+    }
+
     function renderLanguageSelector() {
         const select = document.getElementById("language-options");
         if (!select) return;
@@ -1626,7 +1633,7 @@
             });
         }
         [...select.options].forEach(option => {
-            option.textContent = t(`language.${option.value}`, null, option.value);
+            option.textContent = nativeLanguageName(option.value);
         });
         select.value = i18nLocale;
         select.onchange = event => setLocale(event.target.value);
@@ -1767,10 +1774,11 @@
     i18nLocale = normalizeLocale(uiState.locale)
         || normalizeLocale(navigator.language)
         || I18N_FALLBACK_LOCALE;
-    const i18nReady = Promise.all([
-        loadI18nPack(I18N_FALLBACK_LOCALE),
-        loadI18nPack(i18nLocale)
-    ]).then(() => {
+    // Every pack names its own language, so the selector needs all of them
+    // before it can render native labels; they are small and cached.
+    const i18nReady = Promise.all(
+        I18N_SUPPORTED_LOCALES.map(locale => loadI18nPack(locale))
+    ).then(() => {
         document.documentElement.lang = i18nLocale;
     });
 

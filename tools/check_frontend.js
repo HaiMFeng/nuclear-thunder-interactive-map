@@ -83,4 +83,40 @@ for (const definition of Object.values(definitions)) {
         }
     }
 }
-console.log(`Frontend passed: ${scripts} script(s), ${displayed.size} mission variants.`);
+// Language packs must expose identical keys with identical placeholders, and
+// every literal key used by the page or its markup must exist in English.
+const i18nDirectory = path.join(root, "i18n");
+const packFiles = fs.readdirSync(i18nDirectory).filter(name => name.endsWith(".json"));
+assert(packFiles.length > 0, "No language packs found");
+const locales = packFiles.map(name => path.basename(name, ".json"));
+const dictionaries = new Map(locales.map(locale => [
+    locale,
+    JSON.parse(fs.readFileSync(path.join(i18nDirectory, `${locale}.json`), "utf8"))
+]));
+const english = dictionaries.get("en");
+assert(english, "English is required as the fallback pack");
+const placeholders = text => [...String(text).matchAll(/\{(\w+)\}/g)]
+    .map(match => match[1])
+    .sort();
+for (const locale of locales) {
+    const pack = dictionaries.get(locale);
+    assert.deepEqual(
+        Object.keys(pack).sort(),
+        Object.keys(english).sort(),
+        `${locale}: keys differ from en`
+    );
+    for (const [key, value] of Object.entries(pack)) {
+        assert(typeof value === "string" && value.trim().length > 0,
+            `${locale}: empty value for ${key}`);
+        assert.deepEqual(placeholders(value), placeholders(english[key]),
+            `${locale}: placeholders differ for ${key}`);
+    }
+}
+const usedKeys = new Set([
+    ...[...html.matchAll(/\bt\(\s*"([\w.-]+)"/g)].map(match => match[1]),
+    ...[...html.matchAll(/data-i18n(?:-aria|-title)?="([\w.-]+)"/g)].map(match => match[1])
+]);
+const unknownKeys = [...usedKeys].filter(key => !(key in english));
+assert.equal(unknownKeys.length, 0, `Unknown i18n keys: ${unknownKeys.join(", ")}`);
+console.log(`Frontend passed: ${scripts} script(s), ${displayed.size} mission variants, ` +
+    `${locales.length} language pack(s) with ${Object.keys(english).length} keys.`);

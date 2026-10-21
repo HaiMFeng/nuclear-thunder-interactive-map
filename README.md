@@ -22,8 +22,11 @@ Community-built interactive reference map for War Thunder's Nuclear Escalation e
   altitude above ground or sea level, including terrain masking. It uses the
   same extracted ranges as the range rings and does not model SAM altitude
   limits, radar clutter, or Earth curvature.
-- The selected map, scenario, side, icon style, drawer states, and threat
-  settings are remembered in the browser between visits.
+- Use **Language** to switch the interface between English and Simplified
+  Chinese. The first visit follows the browser preference; the choice is then
+  remembered.
+- The selected map, scenario, side, icon style, language, drawer states, and
+  threat settings are remembered in the browser between visits.
 - Click a unit to show its available sensor, weapon, reload, ammo, and respawn
   information. The legend also lists site compositions, convoy compositions,
   and mission-level respawn behavior.
@@ -119,6 +122,34 @@ python tools/build_icon_templates.py
 `generated/datamine_asset_sync_report.json`; the command also prints the units
 that still need artwork. Keeping these files locally means the deployed map
 does not depend on live Wiki or datamine URLs.
+
+## Translations
+
+Interface copy lives in `i18n/<locale>.json` and `en.json` is the fallback, so a
+missing or half-finished pack never blanks the UI. Add a language by copying
+`i18n/en.json`, translating the values, and listing its id in
+`I18N_SUPPORTED_LOCALES` in `index.html`; the language selector is built from
+that list.
+
+Keys and `{placeholder}` names must match the English pack exactly, and every
+`t("key")` or `data-i18n` key in the page must exist. `tools/check_frontend.js`
+enforces both, so a stale translation fails CI before it reaches the map.
+
+Names that come from data are not duplicated in the packs:
+
+- unit and weapon names load from `unit_display_names.json`, either as a flat
+  `{id: name}` English table or as a table keyed by locale
+  (`{"en": {...}, "zh-CN": {...}}`), which the map picks up without a code
+  change;
+- scenario labels keep their English default in `presets.json`, and a pack may
+  override them with `preset.<id>` keys;
+- map labels (`map.<id>`), team names and the internal unit roles
+  (`role.<role>`) are translated by the pack, with the data value or the cleaned
+  identifier as the fallback.
+
+Units that are missing from `unit_display_names.json` still render through the
+identifier cleanup, so new datamine entries show up before their names are
+translated.
 
 ## Vehicle card art
 

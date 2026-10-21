@@ -134,6 +134,10 @@ for (const name of ["unit_display_names.json", "unit_weapon_display_names.json"]
                 `${name}: empty ${locale} label for ${key}`);
             assert(!/[\u200b\u200c\u200d\ufeff]/.test(label),
                 `${name}: ${locale}/${key} keeps an invisible separator`);
+            if (key.endsWith("#short")) {
+                const base = key.slice(0, -"#short".length);
+                assert(entries[base], `${name}: ${locale}/${key} has no full name`);
+            }
         }
     }
 }

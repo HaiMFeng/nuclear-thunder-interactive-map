@@ -184,6 +184,11 @@ map prefers the current language, then English, and falls back to the internal
 identifier only when an event-only unit has no localization row. Values are
 cleaned of the zero-width spaces the Chinese columns use as word separators.
 
+The `_1` row is exported as an extra `<id>#short` key only when it differs from
+the full name. Site popups, airport defence lists and legend summaries use that
+short label so a long vehicle name cannot overflow a marker button, while the
+unit card behind them keeps the full `_0` name.
+
 Weapon labels come from `lang.vromfs.bin_u/lang/units_weaponry.csv`, where each
 weapon file name has a `weapons/<name>` row and sometimes a `/short` row. Those
 keys keep the client's capitalisation, so matching is case-insensitive; the

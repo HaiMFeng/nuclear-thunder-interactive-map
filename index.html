@@ -1816,22 +1816,28 @@
     // the English default; a table keyed by locale
     // ({ "en": {...}, "zh-CN": {...} }) carries several languages without a
     // code change, falling back to English and finally to the identifier.
-    function localizedName(table, raw, tail) {
+    function localizedName(table, keys) {
         if (!table || typeof table !== "object") return "";
+        const pick = source => keys
+            .map(key => source[key])
+            .find(label => typeof label === "string" && label) || "";
         const fallback = table[I18N_FALLBACK_LOCALE];
         if (!fallback || typeof fallback !== "object") {
             // Legacy flat English table.
-            return table[raw] || table[tail] || "";
+            return pick(table);
         }
-        const current = table[i18nLocale] || {};
-        return current[raw] || current[tail] ||
-            fallback[raw] || fallback[tail] || "";
+        return pick(table[i18nLocale] || {}) || pick(fallback);
     }
 
-    function nameFromTable(table, value) {
+    function nameFromTable(table, value, { short = false } = {}) {
         const raw = String(value ?? "unit").replaceAll("\\", "/").toLowerCase();
         const tail = raw.split("/").pop();
-        const localized = localizedName(table, raw, tail);
+        // Short names are only exported when the client has a shorter label, so
+        // a missing `#short` key falls back to the full name on its own.
+        const keys = short
+            ? [`${raw}#short`, `${tail}#short`, raw, tail]
+            : [raw, tail];
+        const localized = localizedName(table, keys);
         if (localized) return localized;
         // Mission identifiers carry the nation and often an `ai` marker;
         // those are useful for data lookup but noisy in user-facing labels.
@@ -1845,8 +1851,9 @@
             .replaceAll("_", " ");
     }
 
-    function displayName(value) {
-        return nameFromTable(globalUnitDisplayNames, value);
+    // Lists use the compact name; the detail card keeps the full one.
+    function displayName(value, options) {
+        return nameFromTable(globalUnitDisplayNames, value, options);
     }
 
     // Weapon labels live in a separate table because the datamine keeps them in
@@ -5158,7 +5165,7 @@
                 <h3>${escapeHtml(t("airfield.defence"))}</h3>
                 <ul class="airfield-popup-composition">
                     ${units.length
-                        ? units.map(({ unit, count }) => `<li>${count > 1 ? `${count}× ` : ""}${escapeHtml(displayName(unit.name))}</li>`).join("")
+                        ? units.map(({ unit, count }) => `<li>${count > 1 ? `${count}× ` : ""}${escapeHtml(displayName(unit.name, { short: true }))}</li>`).join("")
                         : `<li>${escapeHtml(t("airfield.noDefence"))}</li>`}
                 </ul>
             </section>
@@ -5425,7 +5432,7 @@
     function overviewUnitSummary(entry) {
         const units = compactSiteUnits(entry.units);
         const unitText = units.map(({ unit, count }) =>
-            `${count}× ${displayName(unit.name)}`
+            `${count}× ${displayName(unit.name, { short: true })}`
         );
         const buildingText = compactSiteBuildings(entry.buildings).map(({ building, count }) =>
             `${count}× ${displayName(building.name)}`
@@ -5461,7 +5468,7 @@
                 data-popup-unit-index="${index}"
                 title="${escapeHtml(displayName(name))}">
                 ${image}
-                <span class="site-popup-unit-label">${escapeHtml(displayName(name))}</span>
+                <span class="site-popup-unit-label">${escapeHtml(displayName(name, { short: true }))}</span>
                 ${count > 1 ? `<span class="site-popup-unit-count">×${count}</span>` : ""}
             </button>`;
         }).join("");

@@ -76,34 +76,44 @@ def load_names(csv_path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
     return tables, missing_columns
 
 
-def candidates(unit_id: str) -> list[str]:
+def lookup(names: dict[str, str], unit_id: str,
+           suffixes: tuple[str, ...]) -> str | None:
     raw = str(unit_id or "").replace("\\", "/").strip().lower()
     if not raw:
-        return []
+        return None
     tail = raw.rsplit("/", 1)[-1]
-    values: list[str] = []
-    for value in (raw, tail):
-        if value and value not in values:
-            values.append(value)
-    return [f"{value}_0" for value in values] + [f"{value}_shop" for value in values]
+    for suffix in suffixes:
+        for value in (raw, tail):
+            label = names.get(f"{value}_{suffix}")
+            if label:
+                return label
+    return None
 
 
 def build_table(specs: dict, names: dict[str, str]) -> dict[str, str]:
+    """Full names for every unit, plus ``#short`` rows where they differ.
+
+    The site popup lists units as compact buttons, so it reads the ``_1`` short
+    name; the unit card behind it keeps the full ``_0`` name. Rows where the
+    client ships no shorter label are omitted, which makes the browser fall back
+    to the full name instead of duplicating it in the JSON.
+    """
     output: dict[str, str] = {}
     for key, spec in sorted(specs.items()):
         if not isinstance(spec, dict):
             continue
         unit_id = spec.get("unit_class") or key
-        label = next(
-            (names[candidate] for candidate in candidates(unit_id)
-             if candidate in names),
-            None,
-        )
-        if label is None:
+        full = lookup(names, unit_id, ("0", "shop"))
+        if not full:
             continue
-        output[str(key).lower()] = label
+        index = str(key).lower()
         tail = str(key).replace("\\", "/").rsplit("/", 1)[-1].lower()
-        output.setdefault(tail, label)
+        output[index] = full
+        output.setdefault(tail, full)
+        short = lookup(names, unit_id, ("1", "shop"))
+        if short and short != full:
+            output[f"{index}#short"] = short
+            output.setdefault(f"{tail}#short", short)
     return output
 
 

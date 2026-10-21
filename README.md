@@ -137,10 +137,10 @@ enforces both, so a stale translation fails CI before it reaches the map.
 
 Names that come from data are not duplicated in the packs:
 
-- unit and weapon names load from `unit_display_names.json`, either as a flat
-  `{id: name}` English table or as a table keyed by locale
-  (`{"en": {...}, "zh-CN": {...}}`), which the map picks up without a code
-  change;
+- unit names load from `unit_display_names.json` as
+  `{"<locale>": {"<id>": "<name>"}}`, exported from `units.csv` for every
+  language column the client ships; a flat `{id: name}` table is still accepted
+  as the English default;
 - scenario labels keep their English default in `presets.json`, and a pack may
   override them with `preset.<id>` keys;
 - map labels (`map.<id>`), team names and the internal unit roles
@@ -165,16 +165,21 @@ SVGs; team colour is applied by the map when rendered.
 
 ### In-game display names
 
-Readable English unit names are stored in the datamine localization table
-`lang.vromfs.bin_u/lang/units.csv` (the `_0` row is the full name). Refresh the
-local lookup after changing `unit_specs.json` or pulling a new datamine:
+Readable unit names come from the datamine localization table
+`lang.vromfs.bin_u/lang/units.csv` (the `_0` row is the full name). That table
+has one column per language, so the extractor writes English, Simplified
+Chinese, Traditional Chinese (Taiwan) and Traditional Chinese (Hong Kong) in a
+single pass. Refresh the lookup after changing `unit_specs.json` or pulling a
+new datamine:
 
 ```text
 python tools/extract_display_names.py --units-csv F:\WT_Stuff\War-Thunder-Datamine\lang.vromfs.bin_u\lang\units.csv
 ```
 
-This writes `unit_display_names.json`; the map uses it first and falls back to
-the internal identifier only when a mission-only unit has no localization row.
+This writes `unit_display_names.json` as `{"<locale>": {"<id>": "<name>"}}`. The
+map prefers the current language, then English, and falls back to the internal
+identifier only when an event-only unit has no localization row. Values are
+cleaned of the zero-width spaces the Chinese columns use as word separators.
 
 AI engagement rings come from each weapon's `aimMaxDist` / `attackMaxDist`
 and the vehicle's `AttackMaxRadius`: the AI only fires inside the tightest of

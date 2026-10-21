@@ -1812,22 +1812,26 @@
             .replaceAll("'", "&#039;");
     }
 
-    // Unit names are data, not UI copy. A flat {id: name} table is the English
-    // default; a table keyed by locale ({ "en": {...}, "zh-CN": {...} }) lets
-    // the datamine export carry several languages without a code change.
-    function unitDisplayNamesForLocale() {
-        const table = globalUnitDisplayNames || {};
-        const localized = table[i18nLocale];
-        return localized && typeof localized === "object" && !Array.isArray(localized)
-            ? localized
-            : table;
+    // Unit and weapon names are data, not UI copy. A flat {id: name} table is
+    // the English default; a table keyed by locale
+    // ({ "en": {...}, "zh-CN": {...} }) carries several languages without a
+    // code change, falling back to English and finally to the identifier.
+    function localizedName(table, raw, tail) {
+        if (!table || typeof table !== "object") return "";
+        const fallback = table[I18N_FALLBACK_LOCALE];
+        if (!fallback || typeof fallback !== "object") {
+            // Legacy flat English table.
+            return table[raw] || table[tail] || "";
+        }
+        const current = table[i18nLocale] || {};
+        return current[raw] || current[tail] ||
+            fallback[raw] || fallback[tail] || "";
     }
 
-    function displayName(value) {
+    function nameFromTable(table, value) {
         const raw = String(value ?? "unit").replaceAll("\\", "/").toLowerCase();
         const tail = raw.split("/").pop();
-        const names = unitDisplayNamesForLocale();
-        const localized = names[raw] || names[tail];
+        const localized = localizedName(table, raw, tail);
         if (localized) return localized;
         // Mission identifiers carry the nation and often an `ai` marker;
         // those are useful for data lookup but noisy in user-facing labels.
@@ -1839,6 +1843,10 @@
             .replace(/^ai_/i, "")
             .replace(/_ai(?=_|$)/ig, "")
             .replaceAll("_", " ");
+    }
+
+    function displayName(value) {
+        return nameFromTable(globalUnitDisplayNames, value);
     }
 
     const bounds = [[0, 0], [IMG_SIZE, IMG_SIZE]];

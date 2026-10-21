@@ -118,5 +118,34 @@ const usedKeys = new Set([
 ]);
 const unknownKeys = [...usedKeys].filter(key => !(key in english));
 assert.equal(unknownKeys.length, 0, `Unknown i18n keys: ${unknownKeys.join(", ")}`);
+// Localized name tables are generated data: a missing file, an empty table or
+// a leftover zero-width space would silently degrade every card.
+for (const name of ["unit_display_names.json", "unit_weapon_display_names.json"]) {
+    if (!html.includes(`fetch("${name}")`)) continue;
+    const file = path.join(root, name);
+    assert(fs.existsSync(file), `Missing localized data file: ${name}`);
+    const table = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert(table.en && typeof table.en === "object", `${name}: English table missing`);
+    for (const [locale, entries] of Object.entries(table)) {
+        assert(entries && typeof entries === "object",
+            `${name}: ${locale} is not a table`);
+        for (const [key, label] of Object.entries(entries)) {
+            assert(typeof label === "string" && label.trim().length > 0,
+                `${name}: empty ${locale} label for ${key}`);
+            assert(!/[\u200b\u200c\u200d\ufeff]/.test(label),
+                `${name}: ${locale}/${key} keeps an invisible separator`);
+        }
+    }
+}
+
+// Both tables are exported from the same localization pass, so they must cover
+// the same locales; a mismatch means one extractor lost a language column.
+const unitNames = JSON.parse(fs.readFileSync(path.join(root, "unit_display_names.json"), "utf8"));
+const weaponNames = JSON.parse(fs.readFileSync(path.join(root, "unit_weapon_display_names.json"), "utf8"));
+assert.deepEqual(
+    Object.keys(weaponNames).sort(),
+    Object.keys(unitNames).sort(),
+    "Localized name tables expose different locales"
+);
 console.log(`Frontend passed: ${scripts} script(s), ${displayed.size} mission variants, ` +
     `${locales.length} language pack(s) with ${Object.keys(english).length} keys.`);

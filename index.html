@@ -1849,6 +1849,12 @@
         return nameFromTable(globalUnitDisplayNames, value);
     }
 
+    // Weapon labels live in a separate table because the datamine keeps them in
+    // units_weaponry.csv; both tables share the same locale and fallback rules.
+    function weaponName(value) {
+        return nameFromTable(globalUnitWeaponNames, value);
+    }
+
     const bounds = [[0, 0], [IMG_SIZE, IMG_SIZE]];
     const map = L.map("map", {
         crs: L.CRS.Simple,
@@ -3189,6 +3195,7 @@
     let globalPresetData = { presets: [], variants: [] };
     let globalUnitSpecs = {};
     let globalUnitDisplayNames = {};
+    let globalUnitWeaponNames = {};
     let globalIconTemplates = { nato: {}, vanilla: {}, pact: {}, aircraft: {} };
     let globalMissionLogic = null;
     let globalConvoyRoutes = new Map();
@@ -5026,7 +5033,7 @@
                     ? ` ${t("unit.max", { kind: weaponRangeKindLabel(weapon) })} ${formatDistance(range)}`
                     : ` ${formatDistance(range)}`)
                 : "";
-            return `<strong>${escapeHtml(displayName(weapon.name))}</strong>` +
+            return `<strong>${escapeHtml(weaponName(weapon.name))}</strong>` +
                 rangeLabel + ammo + reload;
         });
         const weaponHtml = weaponLines.length
@@ -6217,6 +6224,10 @@
             if (!response.ok) throw httpError("unit_display_names.json", response);
             return response.json();
         }),
+        fetch("unit_weapon_display_names.json").then(response => {
+            if (!response.ok) throw httpError("unit_weapon_display_names.json", response);
+            return response.json();
+        }),
         fetch("icon_templates.json").then(response => {
             if (!response.ok) throw httpError("icon_templates.json", response);
             return response.json();
@@ -6238,6 +6249,7 @@
             presetData,
             unitSpecs,
             unitDisplayNames,
+            unitWeaponNames,
             iconTemplates
         ]) => {
             applyTranslations();
@@ -6257,6 +6269,7 @@
             globalPresetData = presetData;
             globalUnitSpecs = unitSpecs;
             globalUnitDisplayNames = unitDisplayNames || {};
+            globalUnitWeaponNames = unitWeaponNames || {};
             globalIconTemplates = iconTemplates || { nato: {}, vanilla: {}, pact: {}, aircraft: {} };
             renderIconFamilySelector();
             refreshLayerFolderIcons();

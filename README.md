@@ -141,6 +141,9 @@ Names that come from data are not duplicated in the packs:
   `{"<locale>": {"<id>": "<name>"}}`, exported from `units.csv` for every
   language column the client ships; a flat `{id: name}` table is still accepted
   as the English default;
+- weapon names load from `unit_weapon_display_names.json`, exported from
+  `units_weaponry.csv`; a weapon without a row falls back to the cleaned
+  identifier, so a missing translation never leaves an empty label;
 - scenario labels keep their English default in `presets.json`, and a pack may
   override them with `preset.<id>` keys;
 - map labels (`map.<id>`), team names and the internal unit roles
@@ -180,6 +183,18 @@ This writes `unit_display_names.json` as `{"<locale>": {"<id>": "<name>"}}`. The
 map prefers the current language, then English, and falls back to the internal
 identifier only when an event-only unit has no localization row. Values are
 cleaned of the zero-width spaces the Chinese columns use as word separators.
+
+Weapon labels come from `lang.vromfs.bin_u/lang/units_weaponry.csv`, where each
+weapon file name has a `weapons/<name>` row and sometimes a `/short` row. Those
+keys keep the client's capitalisation, so matching is case-insensitive; the
+short name is used when no full name exists, and weapons without any row keep
+the cleaned identifier instead of an empty label:
+
+```text
+python tools/extract_weapon_names.py --weaponry-csv F:\WT_Stuff\War-Thunder-Datamine\lang.vromfs.bin_u\lang\units_weaponry.csv
+```
+
+This writes `unit_weapon_display_names.json` in the same locale keyed shape.
 
 AI engagement rings come from each weapon's `aimMaxDist` / `attackMaxDist`
 and the vehicle's `AttackMaxRadius`: the AI only fires inside the tightest of

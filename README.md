@@ -1,5 +1,7 @@
 # Nuclear Thunder Interactive Map
 
+English | [简体中文](README.zh-CN.md)
+
 Community-built interactive reference map for War Thunder's Nuclear Escalation event.
 
 ## Use the map

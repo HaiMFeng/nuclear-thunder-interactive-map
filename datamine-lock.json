@@ -1,7 +1,7 @@
 {
   "repository": "gszabi99/War-Thunder-Datamine",
   "ref": "master",
-  "accepted_commit": "fa7051249c144196acf1e419674f7a9753da2ab0",
+  "accepted_commit": "aa326f10c6ba7d523647572368ead2e4d51ffb4d",
   "sources": [
     {
       "path": "aces.vromfs.bin_u/templates/nuclear_escalation/common.blkx",
@@ -130,7 +130,7 @@
     },
     {
       "path": "lang.vromfs.bin_u/lang/units.csv",
-      "sha": "af57944aff71a6b6c8ba9b6b19914f1228faf7ec",
+      "sha": "9feab60e8a16caa6d95c54fe6418421ca464d791",
       "used_for_generation": true
     },
     {
